@@ -1,0 +1,16 @@
+{
+  "name": "fal-studio",
+  "version": "1.0.0",
+  "description": "Local web app for running fal.ai image, video and audio models with reference uploads, batch generation and full model settings.",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js --open",
+    "serve": "node server.js",
+    "test": "node --test test/app.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

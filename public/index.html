@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>fal Studio</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%237c5cff'/><path d='M9 23V9h12v3h-8.5v3H19v3h-6.5v5z' fill='white'/></svg>" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn only-mobile" id="toggleSidebar" title="Models" aria-label="Show models">☰</button>
+    <div class="brand"><span class="logo">F</span> fal Studio</div>
+    <div class="topbar-spacer"></div>
+    <span class="pill" id="keyStatus">Checking key…</span>
+    <button class="btn ghost" id="openFolder" title="Open the folder where outputs are saved">📁 Outputs</button>
+    <button class="btn ghost" id="openSettings" title="Settings">⚙<span class="hide-mobile"> Settings</span></button>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" id="sidebar">
+      <input type="search" id="modelSearch" class="input" placeholder="Search models or paste an endpoint id…" autocomplete="off" />
+      <nav id="modelList" class="model-list"></nav>
+      <button class="btn block" id="addModel">＋ Add any fal model</button>
+    </aside>
+
+    <main class="composer" id="composer">
+      <div id="modelHeader" class="model-header"></div>
+      <div id="schemaNotice"></div>
+      <form id="form" class="form" autocomplete="off" novalidate>
+        <div id="fields"></div>
+
+        <details class="section" id="extraSection">
+          <summary>Extra JSON <span class="muted">(merged into the request — for anything not in the form)</span></summary>
+          <textarea id="extraJson" class="input mono" rows="4" placeholder='{ "some_param": 123 }'></textarea>
+        </details>
+
+        <div class="section runs">
+          <div class="runs-row">
+            <label for="runs">Number of generations (separate requests)</label>
+            <div class="stepper">
+              <button type="button" data-step="-1" aria-label="Fewer">−</button>
+              <input id="runs" type="number" min="1" max="50" value="1" class="input" />
+              <button type="button" data-step="1" aria-label="More">＋</button>
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="varySeed" checked /> If a seed is set, use seed + 1 for each extra run</label>
+          <p class="hint" id="runsHint"></p>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="btn primary big" id="generate">Generate <kbd>Ctrl ↵</kbd></button>
+          <button type="button" class="btn ghost" id="previewJson">Request JSON</button>
+          <button type="button" class="btn ghost" id="resetForm" title="Reset all fields to defaults">Reset</button>
+        </div>
+        <pre id="jsonPreview" class="code hidden"></pre>
+      </form>
+    </main>
+
+    <section class="results">
+      <div class="results-head">
+        <h2>Generations</h2>
+        <div class="seg" id="filter">
+          <button data-filter="all" class="active">All</button>
+          <button data-filter="model">This model</button>
+        </div>
+        <button class="btn ghost small" id="clearHistory" title="Remove finished jobs from history (files stay on disk)">Clear</button>
+      </div>
+      <div id="jobs" class="jobs"></div>
+    </section>
+  </div>
+
+  <dialog id="settingsDialog" class="dialog">
+    <form method="dialog" id="settingsForm">
+      <h2>Settings</h2>
+      <label class="field-label" for="apiKey">fal API key</label>
+      <input id="apiKey" type="password" class="input mono" placeholder="Paste key (id:secret)" autocomplete="off" />
+      <p class="hint">Get one at <a href="https://fal.ai/dashboard/keys" target="_blank" rel="noopener">fal.ai/dashboard/keys</a>. Stored only on this computer in <code>data/config.json</code> and never sent to the browser. You can also set <code>FAL_KEY</code> in <code>.env</code>.</p>
+      <p class="hint" id="keyInfo"></p>
+      <label class="check"><input type="checkbox" id="autoDownload" /> Automatically save every output to disk</label>
+      <label class="field-label" for="outputDirInput">Output folder</label>
+      <input id="outputDirInput" class="input mono" />
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" id="testKey">Test key</button>
+        <span class="topbar-spacer"></span>
+        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+        <button type="button" class="btn primary" id="saveSettings">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="addModelDialog" class="dialog">
+    <form method="dialog" id="addModelForm">
+      <h2>Add a fal model</h2>
+      <p class="hint">Copy the endpoint id from any model page on <a href="https://fal.ai/models" target="_blank" rel="noopener">fal.ai/models</a> (for example <code>fal-ai/kling-video/v2.1/pro/image-to-video</code>). Its settings load automatically.</p>
+      <label class="field-label" for="newModelId">Endpoint id</label>
+      <input id="newModelId" class="input mono" required placeholder="owner/model/path" />
+      <label class="field-label" for="newModelName">Display name (optional)</label>
+      <input id="newModelName" class="input" />
+      <label class="field-label" for="newModelCategory">Category</label>
+      <select id="newModelCategory" class="input"></select>
+      <div class="dialog-actions">
+        <span class="topbar-spacer"></span>
+        <button value="cancel" class="btn ghost" formnovalidate>Cancel</button>
+        <button type="button" class="btn primary" id="saveModel">Add</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="uploadsDialog" class="dialog wide">
+    <h2>Recent uploads</h2>
+    <p class="hint">Click a file to use it. Uploaded files live on fal's CDN.</p>
+    <div id="uploadsGrid" class="uploads-grid"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn ghost" id="clearUploads">Forget all</button>
+      <span class="topbar-spacer"></span>
+      <button type="button" class="btn" id="closeUploads">Close</button>
+    </div>
+  </dialog>
+
+  <div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true">
+    <button class="lb-btn lb-close" aria-label="Close">✕</button>
+    <button class="lb-btn lb-prev" aria-label="Previous">‹</button>
+    <div class="lb-stage"></div>
+    <button class="lb-btn lb-next" aria-label="Next">›</button>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+  <script src="app.js"></script>
+</body>
+</html>
