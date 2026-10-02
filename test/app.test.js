@@ -127,8 +127,8 @@ test("pricing: Seedance token formula and video-reference discount", () => {
   // 1280x720 x 5s x 24 / 1024 = 108,000 tokens x $0.0214/1k
   near(pricing.estimate("bytedance/seedance-2.5/text-to-video", { duration: 5, resolution: "720p", aspect_ratio: "16:9" }).perRequest, 2.3112);
   near(pricing.estimate("bytedance/seedance-2.5/reference-to-video", { duration: 5, resolution: "720p", reference_video_urls: ["x"] }).perRequest, 2.3112 * 0.6);
-  // Seedance 2.0 at 720p matches the published $0.3034/s
-  assert.ok(Math.abs(pricing.estimate("bytedance/seedance-2.0/text-to-video", { duration: 1, resolution: "720p" }).perRequest - 0.3034) < 0.001);
+  // Seedance 2.0 at 720p ≈ the published $0.30/s (21,600 tokens/s × $0.014/1k)
+  assert.ok(Math.abs(pricing.estimate("bytedance/seedance-2.0/text-to-video", { duration: 1, resolution: "720p" }).perRequest - 0.3024) < 0.0001);
 });
 
 test("pricing: MiniMax H3 family", () => {
@@ -136,6 +136,23 @@ test("pricing: MiniMax H3 family", () => {
   near(pricing.estimate("minimax/h3/text-to-video", { duration: 10 }).perRequest, 1.3);
   const refs = Array.from({ length: 8 }, (_, i) => `img${i}`);
   near(pricing.estimate("minimax/h3/reference-to-video", { duration: 5, reference_image_urls: refs }).perRequest, 0.65 + 3 * 0.08);
+});
+
+test("pricing: matches fal's worked examples", () => {
+  // fal: 5s 768p H3 Max Reference = $0.40 with 4 square images, $0.42048 with 5
+  near(pricing.estimate("minimax/h3-max/reference-to-video", { duration: 5, resolution: "768P", reference_image_urls: ["a", "b", "c", "d"] }).perRequest, 0.4);
+  near(pricing.estimate("minimax/h3-max/reference-to-video", { duration: 5, resolution: "768P", reference_image_urls: ["a", "b", "c", "d", "e"] }).perRequest, 0.42048);
+  // fal: 30s lip sync at 768p = $2.88 (1.2x over 15s)
+  near(pricing.estimate("minimax/h3-max/lip-sync/image-to-video", { duration: 30, resolution: "768P" }).perRequest, 2.88);
+  // fal: 5s Veo 3.1 1080p with audio = $2.00; Wan 3.0 Prime 5s 720p = $0.70
+  near(pricing.estimate("fal-ai/veo3.1", { duration: "5s", resolution: "1080p" }).perRequest, 2.0);
+  near(pricing.estimate("alibaba/wan-3.0-prime/text-to-video", { duration: 5, resolution: "720p" }).perRequest, 0.7);
+  // Seedance 2.0 at 1080p = $0.68/s; GPT Image 2.5 table
+  assert.ok(Math.abs(pricing.estimate("bytedance/seedance-2.0/text-to-video", { duration: "1", resolution: "1080p" }).perRequest - 0.682) < 0.002);
+  near(pricing.estimate("openai/gpt-image-2.5/sunburst/text-to-image", { quality: "medium", image_size: "landscape_4_3" }).perRequest, 0.00903);
+  near(pricing.estimate("openai/gpt-image-2.5/sunburst/text-to-image", { quality: "max", image_size: { width: 1440, height: 2560 } }).perRequest, 0.2211);
+  near(pricing.estimate("minimax/h3/text-to-video", { duration: 5, resolution: "768P" }).perRequest, 0.3);
+  near(pricing.estimate("minimax/h3-max/3d-to-video", { duration: 5, resolution: "768P" }).perRequest, 0.9);
 });
 
 test("pricing: images", () => {
@@ -153,13 +170,7 @@ test("pricing: falls back to live unit price, null when unknown", () => {
 
 test("every built-in video/image model has a price rule or is flagged for live pricing", () => {
   const missing = MODELS.filter((m) => !pricing.hasRule(m.id)).map((m) => m.id);
-  assert.deepStrictEqual(missing, [
-    "minimax/h3/text-to-video/lora",
-    "minimax/h3-max/multi-angle/image-to-video",
-    "minimax/h3-max/lip-sync/image-to-video",
-    "minimax/h3-max/3d-to-video",
-    "xai/grok-imagine-image",
-  ]);
+  assert.deepStrictEqual(missing, []);
 });
 
 test("live pricing route proxies fal's pricing API", async () => {

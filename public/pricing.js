@@ -12,7 +12,7 @@
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.FalPricing = factory();
 })(typeof self !== "undefined" ? self : this, function () {
-  const PRICES_CHECKED = "Oct 2026";
+  const PRICES_CHECKED = "fal.ai, 2 Oct 2026";
 
   // ---------------------------------------------------------------- input readers
 
@@ -22,6 +22,10 @@
 
     const seconds = (fallback = 5) => {
       const d = v("duration");
+      if (String(d).toLowerCase() === "auto") {
+        assumptions.push(`duration "auto" — assumed ${fallback}s`);
+        return fallback;
+      }
       if (d !== undefined) {
         const n = parseFloat(String(d));
         if (Number.isFinite(n)) return n;
@@ -104,7 +108,7 @@
 
   // Per-second price chosen by resolution (and optionally audio on/off).
   // table: { "720p": 0.1 } or { "720p": [silent, withAudio] }
-  function perSecond(table, { defaultRes = "720p", audioDefault = true, multiplier } = {}) {
+  function perSecond(table, { defaultRes = "720p", audioDefault = true, multiplier, minSeconds, fee, assumedSeconds } = {}) {
     return (r) => {
       let res = r.res(defaultRes);
       if (!(res in table)) {
@@ -118,9 +122,14 @@
         rate = rate[on ? 1 : 0];
         audioNote = on ? ", audio on" : ", audio off";
       }
-      const secs = r.seconds();
+      let secs = r.seconds(assumedSeconds || 5);
+      if (minSeconds && secs < minSeconds) secs = minSeconds;
       let cost = rate * secs;
       const lines = [`${secs}s × ${money(rate)}/s (${res}${audioNote})`];
+      if (fee) {
+        cost += fee.amount;
+        lines.push(`+ ${money(fee.amount)} ${fee.label}`);
+      }
       if (multiplier) {
         const m = multiplier(r);
         if (m && m.add) {
@@ -136,14 +145,16 @@
   }
 
   // Token-billed video (Seedance): tokens = width × height × seconds × 24 / 1024.
-  function videoTokens(per1k, { defaultRes = "720p", multiplier } = {}) {
+  function videoTokens(rates, { defaultRes = "720p", multiplier, inputVideo } = {}) {
     return (r) => {
       const res = r.res(defaultRes);
+      const per1k = typeof rates === "number" ? rates : rates[res] ?? rates.default;
+      if (inputVideo && r.listLen("reference_video_urls", "video_urls") > 0) r.assumptions.push("input reference video seconds are also billed (not included)");
       const [w, h] = videoDims(res, r.v("aspect_ratio"));
       const secs = r.seconds();
       const tokens = (w * h * secs * 24) / 1024;
       let cost = (tokens / 1000) * per1k;
-      const lines = [`${secs}s at ${w}×${h} ≈ ${Math.round(tokens).toLocaleString()} tokens × ${money(per1k)}/1k`];
+      const lines = [`${secs}s at ${w}×${h} ≈ ${Math.round(tokens).toLocaleString()} tokens × $${per1k}/1k tokens`];
       if (multiplier) {
         const m = multiplier(r);
         if (m && m.factor !== 1) {
@@ -174,7 +185,7 @@
       let cost = unit * n;
       if (extras) {
         for (const e of extras) {
-          if (r.v(e.param) === true) {
+          if (e.equals !== undefined ? r.v(e.param) === e.equals : r.v(e.param) === true) {
             cost += e.price;
             lines.push(`+ ${money(e.price)} ${e.label}`);
           }
@@ -200,25 +211,32 @@
     };
   }
 
-  // GPT Image 2.5: price per image by quality, scaled by output size (fal's table).
+  // GPT Image 2.5: fal's per-image table by size and quality (prompt/input tokens extra).
   function gptImage() {
-    const q = { low: 0.00588, medium: 0.01317, high: 0.05268, xhigh: 0.09366, max: 0.21072 };
-    const sizes = [
-      [1024 * 768, 0.6855],
-      [1024 * 1024, 1],
-      [1920 * 1080, 0.7517],
-      [3840 * 2160, 1.8995],
+    const QUAL = ["low", "medium", "high", "xhigh", "max"];
+    const TABLE = [
+      [1024, 768, [0.00402, 0.00903, 0.03612, 0.0642, 0.14445]],
+      [1024, 1024, [0.00588, 0.01317, 0.05268, 0.09366, 0.21072]],
+      [1536, 1024, [0.00474, 0.01029, 0.04116, 0.07377, 0.16464]],
+      [1920, 1080, [0.00441, 0.01029, 0.0396, 0.07041, 0.1584]],
+      [2560, 1440, [0.00615, 0.01434, 0.05529, 0.09828, 0.2211]],
+      [3840, 2160, [0.01113, 0.02595, 0.10008, 0.1779, 0.40026]],
     ];
     return (r) => {
-      const quality = String(r.v("quality") ?? "high").toLowerCase();
-      const base = q[quality] ?? q.high;
-      if (!(quality in q)) r.assumptions.push(`unknown quality "${quality}", used high`);
+      let quality = String(r.v("quality") ?? "high").toLowerCase();
+      if (!QUAL.includes(quality)) {
+        r.assumptions.push(`quality "${quality}" priced as high`);
+        quality = "high";
+      }
       const [w, h] = imageDims(r);
-      const px = w * h;
-      const factor = sizes.reduce((best, s) => (Math.abs(s[0] - px) < Math.abs(best[0] - px) ? s : best))[1];
+      const big = Math.max(w, h);
+      const small = Math.min(w, h);
+      // Closest table size by pixel count and shape, ignoring orientation.
+      const score = (t) => Math.abs(Math.log((t[0] * t[1]) / (big * small))) + Math.abs(Math.log(t[0] / t[1] / (big / small)));
+      const row = TABLE.reduce((best, t) => (score(t) < score(best) ? t : best));
+      const unit = row[2][QUAL.indexOf(quality)];
       const n = r.count();
-      const unit = base * factor;
-      return { cost: unit * n, lines: [`${n} × ${money(unit)} (${quality}, ${w}×${h})`, "input image tokens not included"] };
+      return { cost: unit * n, lines: [`${n} × ${money(unit)} (${quality}, priced as ${row[0]}×${row[1]})`, "prompt & input-image tokens not included"] };
     };
   }
 
@@ -229,17 +247,35 @@
   const OMNI = { "360p": 0.03, "720p": 0.1, "1080p": 0.15, "4k": 0.3 };
   const WAN3 = { "480p": 0.05, "720p": 0.1, "1080p": 0.2 };
   const WAN3_PRIME = { "480p": 0.068, "720p": 0.14, "1080p": 0.28 };
-  const H3MAX = { "480p": 0.05, "768p": 0.08, "1080p": 0.16, "2k": 0.32 };
+  const H3MAX = { "480p": 0.05, "768p": 0.08, "1080p": 0.16 };
+  const H3MAX_2K = { ...H3MAX, "2k": 0.32 };
   const H3MAX_TURBO = { "480p": 0.025, "768p": 0.04, "1080p": 0.08 };
-  const H3 = { "2k": 0.13 };
+  const H3MAX_TURBO_2K = { ...H3MAX_TURBO, "2k": 0.16 };
+  const H3MAX_INSERT = { "480p": 0.05, "768p": 0.06 };
+  const H3MAX_RECAST = { "768p": 0.3, "1080p": 0.45 };
+  const H3 = { "480p": 0.05, "768p": 0.06, "2k": 0.13, "4k": 0.16 };
+  const H3_LORA = { "480p": 0.0625, "768p": 0.075, "2k": 0.1625, "4k": 0.2 };
+  // H3 Max reference: 4,096 reference tokens included; a square image is 1,024 tokens;
+  // extra tokens cost $0.02 per 1,000 (each square image after the 4th ≈ $0.02048).
+  const h3MaxRefTokens = (r) => {
+    const imgs = r.listLen("reference_image_urls");
+    if (r.listLen("reference_video_urls", "reference_audio_urls")) r.assumptions.push("video/audio reference tokens not included");
+    const extra = Math.max(0, imgs * 1024 - 4096);
+    return extra ? { add: (extra / 1000) * 0.02, note: `+ ${extra.toLocaleString()} reference tokens × $0.02/1k (images counted as square)` } : null;
+  };
+  // Lip sync bills by the audio length, ×1.2 over 15 seconds.
+  const lipSyncLong = (r) => (r.seconds(5) > 15 ? { factor: 1.2, note: "× 1.2 (over 15s)" } : null);
   // Base H3 reference: first 5 reference images free, $0.08 per extra image.
   const h3ExtraImages = (r) => {
     const extra = Math.max(0, r.listLen("reference_image_urls", "image_urls") - 5);
     return extra ? { add: extra * 0.08, note: `+ ${extra} extra reference image${extra > 1 ? "s" : ""} × $0.08` } : null;
   };
-  const KLING3_PRO = { "720p": [0.112, 0.168], "1080p": [0.112, 0.168], "4k": [0.42, 0.42] };
+  const KLING3_PRO = { "1080p": [0.112, 0.168] };
   const NB2_RES = { "0.5K": 0.75, "1K": 1, "2K": 1.5, "4K": 2 };
   const WEB_SEARCH = [{ param: "enable_web_search", price: 0.015, label: "web search" }];
+  const NB2_EXTRAS = [...WEB_SEARCH, { param: "thinking_level", equals: "high", price: 0.002, label: "high thinking" }];
+  const SEEDANCE2 = { "480p": 0.014, "720p": 0.014, "1080p": 0.014, "4k": 0.008, default: 0.014 };
+  const SEEDANCE25 = { "480p": 0.0214, "720p": 0.0214, "1080p": 0.0234, default: 0.0214 };
 
   const RULES = {
     // Video
@@ -254,21 +290,28 @@
     "alibaba/wan-3.0-prime/reference-to-video": perSecond(WAN3_PRIME),
     "minimax/h3-max/text-to-video": perSecond(H3MAX, { defaultRes: "768p" }),
     "minimax/h3-max/image-to-video": perSecond(H3MAX, { defaultRes: "768p" }),
-    "minimax/h3-max/reference-to-video": perSecond(H3MAX, { defaultRes: "768p" }),
-    "minimax/h3-max/extend-video": perSecond(H3MAX, { defaultRes: "768p" }),
+    "minimax/h3-max/reference-to-video": perSecond(H3MAX, { defaultRes: "768p", multiplier: h3MaxRefTokens }),
+    "minimax/h3-max/extend-video": perSecond(H3MAX_2K, { defaultRes: "768p", multiplier: h3MaxRefTokens }),
+    "minimax/h3-max/camera-controls": perSecond(H3MAX, { defaultRes: "768p" }),
+    "minimax/h3-max/insert-video": perSecond(H3MAX_INSERT, { defaultRes: "768p", multiplier: h3MaxRefTokens }),
+    "minimax/h3-max/recast": perSecond(H3MAX_RECAST, { defaultRes: "768p" }),
+    "minimax/h3-max/lip-sync/image-to-video": perSecond(H3MAX_2K, { defaultRes: "768p", multiplier: lipSyncLong }),
+    "minimax/h3-max/3d-to-video": perSecond(H3MAX, { defaultRes: "768p", minSeconds: 5, fee: { amount: 0.5, label: "processing fee" }, multiplier: h3MaxRefTokens }),
     "minimax/h3-max-turbo/text-to-video": perSecond(H3MAX_TURBO, { defaultRes: "768p" }),
     "minimax/h3-max-turbo/image-to-video": perSecond(H3MAX_TURBO, { defaultRes: "768p" }),
+    "minimax/h3-max-turbo/extend-video": perSecond(H3MAX_TURBO_2K, { defaultRes: "768p" }),
     "minimax/h3/text-to-video": perSecond(H3, { defaultRes: "2k" }),
     "minimax/h3/image-to-video": perSecond(H3, { defaultRes: "2k" }),
     "minimax/h3/reference-to-video": perSecond(H3, { defaultRes: "2k", multiplier: h3ExtraImages }),
-    "bytedance/seedance-2.5/text-to-video": videoTokens(0.0214),
-    "bytedance/seedance-2.5/image-to-video": videoTokens(0.0214),
-    "bytedance/seedance-2.5/reference-to-video": videoTokens(0.0214, { multiplier: videoRefDiscount }),
-    // Seedance 2.0 is listed per second at 720p ($0.3034 T2V, $0.3024 I2V/ref);
-    // the equivalent token rate scales it to other resolutions.
-    "bytedance/seedance-2.0/text-to-video": videoTokens(0.014046),
-    "bytedance/seedance-2.0/image-to-video": videoTokens(0.014),
-    "bytedance/seedance-2.0/reference-to-video": videoTokens(0.014, { multiplier: videoRefDiscount }),
+    "minimax/h3/text-to-video/lora": perSecond(H3_LORA, { defaultRes: "2k" }),
+    "minimax/h3/image-to-video/lora": perSecond(H3_LORA, { defaultRes: "2k" }),
+    "minimax/h3/reference-to-video/lora": perSecond(H3_LORA, { defaultRes: "2k" }),
+    "bytedance/seedance-2.5/text-to-video": videoTokens(SEEDANCE25),
+    "bytedance/seedance-2.5/image-to-video": videoTokens(SEEDANCE25),
+    "bytedance/seedance-2.5/reference-to-video": videoTokens(SEEDANCE25, { multiplier: videoRefDiscount, inputVideo: true }),
+    "bytedance/seedance-2.0/text-to-video": videoTokens(SEEDANCE2),
+    "bytedance/seedance-2.0/image-to-video": videoTokens(SEEDANCE2),
+    "bytedance/seedance-2.0/reference-to-video": videoTokens(SEEDANCE2, { multiplier: videoRefDiscount, inputVideo: true }),
     "fal-ai/veo3.1": perSecond(VEO31),
     "fal-ai/veo3.1/image-to-video": perSecond(VEO31),
     "fal-ai/veo3.1/fast": perSecond(VEO31_FAST),
@@ -283,8 +326,9 @@
     "openai/gpt-image-2.5/flare/edit": gptImage(),
     "fal-ai/nano-banana-pro": perImage(0.15, { resMultipliers: { "1K": 1, "2K": 1, "4K": 2 }, extras: WEB_SEARCH }),
     "fal-ai/nano-banana-pro/edit": perImage(0.15, { resMultipliers: { "1K": 1, "2K": 1, "4K": 2 }, extras: WEB_SEARCH }),
-    "fal-ai/nano-banana-2": perImage(0.08, { resMultipliers: NB2_RES, extras: WEB_SEARCH }),
-    "fal-ai/nano-banana-2/edit": perImage(0.08, { resMultipliers: NB2_RES, extras: WEB_SEARCH }),
+    "fal-ai/nano-banana-2": perImage(0.08, { resMultipliers: NB2_RES, extras: NB2_EXTRAS }),
+    "fal-ai/nano-banana-2/edit": perImage(0.08, { resMultipliers: NB2_RES, extras: NB2_EXTRAS }),
+    "xai/grok-imagine-image": perImage(0.02),
     "fal-ai/flux-2-pro": fluxMegapixel(0.03, 0.015),
     "fal-ai/flux-2-pro/edit": fluxMegapixel(0.03, 0.015, { inputKeys: ["image_urls", "image_url"] }),
   };
