@@ -131,6 +131,13 @@ test("pricing: Seedance token formula and video-reference discount", () => {
   assert.ok(Math.abs(pricing.estimate("bytedance/seedance-2.0/text-to-video", { duration: 1, resolution: "720p" }).perRequest - 0.3034) < 0.001);
 });
 
+test("pricing: MiniMax H3 family", () => {
+  near(pricing.estimate("minimax/h3-max-turbo/text-to-video", { duration: 15, resolution: "768p" }).perRequest, 0.6);
+  near(pricing.estimate("minimax/h3/text-to-video", { duration: 10 }).perRequest, 1.3);
+  const refs = Array.from({ length: 8 }, (_, i) => `img${i}`);
+  near(pricing.estimate("minimax/h3/reference-to-video", { duration: 5, reference_image_urls: refs }).perRequest, 0.65 + 3 * 0.08);
+});
+
 test("pricing: images", () => {
   near(pricing.estimate("fal-ai/nano-banana-2", { num_images: 2, resolution: "4K" }).perRequest, 0.32);
   near(pricing.estimate("fal-ai/nano-banana-pro", { resolution: "1K", enable_web_search: true }).perRequest, 0.165);
@@ -146,7 +153,12 @@ test("pricing: falls back to live unit price, null when unknown", () => {
 
 test("every built-in video/image model has a price rule or is flagged for live pricing", () => {
   const missing = MODELS.filter((m) => !pricing.hasRule(m.id)).map((m) => m.id);
-  assert.deepStrictEqual(missing, ["xai/grok-imagine-image"]);
+  assert.deepStrictEqual(missing, [
+    "minimax/h3/text-to-video/lora",
+    "minimax/h3-max/lip-sync/image-to-video",
+    "minimax/h3-max/3d-to-video",
+    "xai/grok-imagine-image",
+  ]);
 });
 
 test("live pricing route proxies fal's pricing API", async () => {

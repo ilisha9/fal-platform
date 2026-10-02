@@ -123,7 +123,10 @@
       const lines = [`${secs}s × ${money(rate)}/s (${res}${audioNote})`];
       if (multiplier) {
         const m = multiplier(r);
-        if (m && m.factor !== 1) {
+        if (m && m.add) {
+          cost += m.add;
+          lines.push(m.note);
+        } else if (m && m.factor !== undefined && m.factor !== 1) {
           cost *= m.factor;
           lines.push(m.note);
         }
@@ -227,6 +230,13 @@
   const WAN3 = { "480p": 0.05, "720p": 0.1, "1080p": 0.2 };
   const WAN3_PRIME = { "480p": 0.068, "720p": 0.14, "1080p": 0.28 };
   const H3MAX = { "480p": 0.05, "768p": 0.08, "1080p": 0.16, "2k": 0.32 };
+  const H3MAX_TURBO = { "480p": 0.025, "768p": 0.04, "1080p": 0.08 };
+  const H3 = { "2k": 0.13 };
+  // Base H3 reference: first 5 reference images free, $0.08 per extra image.
+  const h3ExtraImages = (r) => {
+    const extra = Math.max(0, r.listLen("reference_image_urls", "image_urls") - 5);
+    return extra ? { add: extra * 0.08, note: `+ ${extra} extra reference image${extra > 1 ? "s" : ""} × $0.08` } : null;
+  };
   const KLING3_PRO = { "720p": [0.112, 0.168], "1080p": [0.112, 0.168], "4k": [0.42, 0.42] };
   const NB2_RES = { "0.5K": 0.75, "1K": 1, "2K": 1.5, "4K": 2 };
   const WEB_SEARCH = [{ param: "enable_web_search", price: 0.015, label: "web search" }];
@@ -245,6 +255,12 @@
     "minimax/h3-max/text-to-video": perSecond(H3MAX, { defaultRes: "768p" }),
     "minimax/h3-max/image-to-video": perSecond(H3MAX, { defaultRes: "768p" }),
     "minimax/h3-max/reference-to-video": perSecond(H3MAX, { defaultRes: "768p" }),
+    "minimax/h3-max/extend-video": perSecond(H3MAX, { defaultRes: "768p" }),
+    "minimax/h3-max-turbo/text-to-video": perSecond(H3MAX_TURBO, { defaultRes: "768p" }),
+    "minimax/h3-max-turbo/image-to-video": perSecond(H3MAX_TURBO, { defaultRes: "768p" }),
+    "minimax/h3/text-to-video": perSecond(H3, { defaultRes: "2k" }),
+    "minimax/h3/image-to-video": perSecond(H3, { defaultRes: "2k" }),
+    "minimax/h3/reference-to-video": perSecond(H3, { defaultRes: "2k", multiplier: h3ExtraImages }),
     "bytedance/seedance-2.5/text-to-video": videoTokens(0.0214),
     "bytedance/seedance-2.5/image-to-video": videoTokens(0.0214),
     "bytedance/seedance-2.5/reference-to-video": videoTokens(0.0214, { multiplier: videoRefDiscount }),

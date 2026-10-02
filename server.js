@@ -196,6 +196,7 @@ async function getSchema(endpointId) {
 
 function guessCategory(id) {
   if (/reference-to-video/.test(id)) return "reference-to-video";
+  if (/video-to-video|extend-video|3d-to-video/.test(id)) return "video-to-video";
   if (/image-to-video|i2v/.test(id)) return "image-to-video";
   if (/video/.test(id)) return "text-to-video";
   if (/edit|kontext|image-to-image/.test(id)) return "image-to-image";
