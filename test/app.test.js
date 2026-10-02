@@ -7,6 +7,8 @@ const os = require("os");
 const path = require("path");
 const mock = require("./mock-fal");
 const { extractEndpointSchemas } = require("../lib/openapi");
+const pricing = require("../public/pricing");
+const { MODELS } = require("../lib/models");
 
 let fal, app, base, dataDir;
 
@@ -16,7 +18,7 @@ before(async () => {
   const port = 3900 + Math.floor(Math.random() * 90);
   const m = `http://127.0.0.1:${fal.port}`;
   app = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(port), FAL_KEY: "", FAL_STUDIO_DATA: dataDir, FAL_QUEUE_URL: `${m}/queue`, FAL_REST_URL: m, FAL_OPENAPI_URL: `${m}/openapi?endpoint_id=` },
+    env: { ...process.env, PORT: String(port), FAL_KEY: "", FAL_STUDIO_DATA: dataDir, FAL_QUEUE_URL: `${m}/queue`, FAL_REST_URL: m, FAL_OPENAPI_URL: `${m}/openapi?endpoint_id=`, FAL_PLATFORM_URL: `${m}/platform` },
     stdio: ["ignore", "pipe", "inherit"],
   });
   await new Promise((resolve) => app.stdout.on("data", (d) => /running at/.test(d) && resolve()));
@@ -109,4 +111,45 @@ test("batch generation runs to completion and saves outputs", async () => {
 test("rejects path traversal", async () => {
   const res = await fetch(base + "/outputs/..%2F..%2Fserver.js");
   assert.notStrictEqual(res.status, 200);
+});
+
+const near = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, `${a} != ${b}`);
+
+test("pricing: per-second by resolution and audio", () => {
+  near(pricing.estimate("minimax/h3-max/text-to-video", { duration: 10, resolution: "1080p" }).perRequest, 1.6);
+  near(pricing.estimate("google/gemini-omni-flash/v1.1/text-to-video", { duration: "8" }, { defaults: { resolution: "720p" } }).perRequest, 0.8);
+  near(pricing.estimate("fal-ai/veo3.1", { duration: "8s", generate_audio: false }).perRequest, 1.6);
+  near(pricing.estimate("fal-ai/veo3.1", { duration: "8s", resolution: "4k" }).perRequest, 4.8);
+  near(pricing.estimate("fal-ai/kling-video/v3/pro/text-to-video", { duration: "5", generate_audio: true }).perRequest, 0.84);
+});
+
+test("pricing: Seedance token formula and video-reference discount", () => {
+  // 1280x720 x 5s x 24 / 1024 = 108,000 tokens x $0.0214/1k
+  near(pricing.estimate("bytedance/seedance-2.5/text-to-video", { duration: 5, resolution: "720p", aspect_ratio: "16:9" }).perRequest, 2.3112);
+  near(pricing.estimate("bytedance/seedance-2.5/reference-to-video", { duration: 5, resolution: "720p", reference_video_urls: ["x"] }).perRequest, 2.3112 * 0.6);
+  // Seedance 2.0 at 720p matches the published $0.3034/s
+  assert.ok(Math.abs(pricing.estimate("bytedance/seedance-2.0/text-to-video", { duration: 1, resolution: "720p" }).perRequest - 0.3034) < 0.001);
+});
+
+test("pricing: images", () => {
+  near(pricing.estimate("fal-ai/nano-banana-2", { num_images: 2, resolution: "4K" }).perRequest, 0.32);
+  near(pricing.estimate("fal-ai/nano-banana-pro", { resolution: "1K", enable_web_search: true }).perRequest, 0.165);
+  near(pricing.estimate("fal-ai/flux-2-pro", { image_size: { width: 1920, height: 1080 } }).perRequest, 0.045);
+  near(pricing.estimate("openai/gpt-image-2.5/flare/text-to-image", { quality: "max", image_size: "1024x1024" }).perRequest, 0.21072);
+});
+
+test("pricing: falls back to live unit price, null when unknown", () => {
+  near(pricing.estimate("some/new/model", { num_images: 3 }, { live: { unit_price: 0.02, unit: "image" } }).perRequest, 0.06);
+  near(pricing.estimate("some/video", { duration: 6 }, { live: { unit_price: 0.1, unit: "second" } }).perRequest, 0.6);
+  assert.strictEqual(pricing.estimate("some/new/model", {}), null);
+});
+
+test("every built-in video/image model has a price rule or is flagged for live pricing", () => {
+  const missing = MODELS.filter((m) => !pricing.hasRule(m.id)).map((m) => m.id);
+  assert.deepStrictEqual(missing, ["xai/grok-imagine-image"]);
+});
+
+test("live pricing route proxies fal's pricing API", async () => {
+  const r = await call("/api/pricing?id=fal-ai/test/model");
+  assert.deepStrictEqual(r.body.live, { unit_price: 0.025, unit: "image", currency: "USD" });
 });

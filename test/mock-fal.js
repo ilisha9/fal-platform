@@ -65,6 +65,11 @@ function start(port = 0) {
       log.push({ method: req.method, path: url.pathname, auth: req.headers.authorization, body: body.toString() });
       const authed = req.headers.authorization === "Key test-id:test-secret";
 
+      if (url.pathname === "/platform/models/pricing") {
+        if (!authed) return json(401, { detail: "Unauthorized" });
+        const id = url.searchParams.get("endpoint_id");
+        return json(200, { prices: [{ endpoint_id: id, unit_price: 0.025, unit: "image", currency: "USD" }], next_cursor: null, has_more: false });
+      }
       if (url.pathname === "/openapi") return json(200, openapiFor(url.searchParams.get("endpoint_id")));
       if (url.pathname.startsWith("/storage/upload/initiate")) {
         if (!authed) return json(401, { detail: "Invalid API key" });

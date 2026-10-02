@@ -809,9 +809,103 @@ function updateRunsHint() {
   const total = runs * perRun;
   $("#runsHint").textContent =
     runs > 1 || perRun > 1
-      ? `${runs} request${runs > 1 ? "s" : ""}${perRun > 1 ? ` × ${perRun} outputs each` : ""} → about ${total} result${total > 1 ? "s" : ""}. You're billed per request/output.`
+      ? `${runs} request${runs > 1 ? "s" : ""}${perRun > 1 ? ` × ${perRun} outputs each` : ""} → about ${total} result${total > 1 ? "s" : ""}.`
       : "";
   $("#generate").firstChild.textContent = runs > 1 ? `Generate ×${runs} ` : "Generate ";
+  updateEstimate(runs);
+}
+
+// ------------------------------------------------------------------ cost estimate
+
+function schemaDefaults() {
+  const props = (state.schema && state.schema.input && state.schema.input.properties) || {};
+  const out = {};
+  for (const [k, s] of Object.entries(props)) {
+    const d = s.default !== undefined ? s.default : unwrapNullable(s).schema.default;
+    if (d !== undefined && d !== null) out[k] = d;
+  }
+  return out;
+}
+
+function currentInputLoose() {
+  let input = {};
+  try {
+    input = state.root.get();
+  } catch {
+    /* a field is mid-edit; estimate from defaults */
+  }
+  try {
+    const extra = JSON.parse($("#extraJson").value || "{}");
+    if (extra && typeof extra === "object" && !Array.isArray(extra)) Object.assign(input, extra);
+  } catch {
+    /* ignore invalid extra JSON here */
+  }
+  return input;
+}
+
+function updateEstimate(runs) {
+  const box = $("#costBox");
+  if (!state.model || !state.root || !window.FalPricing) return box.replaceChildren();
+  runs = runs || clampRunsSilently();
+  const est = FalPricing.estimate(state.model.id, currentInputLoose(), { defaults: schemaDefaults(), live: state.livePrice });
+  state.lastEstimate = est;
+  const money = FalPricing.money;
+  if (!est) {
+    box.replaceChildren(
+      h("div", { class: "cost-main" }, h("span", { class: "muted" }, "Estimated cost: "), h("strong", {}, "unknown")),
+      h("div", { class: "muted small" }, state.livePriceError || (state.livePriceLoading ? "Loading live price from fal…" : "No price data for this model. Check its page on fal.ai."))
+    );
+    return;
+  }
+  const total = est.perRequest === null ? null : est.perRequest * runs;
+  const live = state.livePrice;
+  box.replaceChildren(
+    h(
+      "div",
+      { class: "cost-main" },
+      h("span", { class: "muted" }, "Estimated cost: "),
+      h("strong", { class: "cost-total" }, total === null ? "—" : money(total)),
+      runs > 1 && est.perRequest !== null ? h("span", { class: "muted" }, ` (${money(est.perRequest)} × ${runs} runs)`) : null
+    ),
+    h("div", { class: "cost-detail muted small" }, est.lines.join(" · "), est.assumptions.length ? ` · ${est.assumptions.join(", ")}` : ""),
+    h(
+      "div",
+      { class: "cost-detail muted small" },
+      `Source: ${est.source}`,
+      live && est.source !== "fal pricing API" ? ` · fal API lists ${money(Number(live.unit_price))}/${live.unit}` : "",
+      " · estimate only, fal bills the actual usage"
+    )
+  );
+}
+
+function clampRunsSilently() {
+  return Math.min(50, Math.max(1, Math.round(Number($("#runs").value) || 1)));
+}
+
+async function loadLivePrice(model) {
+  state.livePrice = null;
+  state.livePriceError = null;
+  state.livePriceLoading = true;
+  try {
+    const r = await api(`/api/pricing?id=${encodeURIComponent(model.id)}`);
+    if (state.model !== model) return;
+    state.livePrice = r.live;
+    state.livePriceError = r.error || (r.live ? null : "fal's pricing API has no price for this endpoint.");
+  } catch (e) {
+    state.livePriceError = e.message;
+  } finally {
+    state.livePriceLoading = false;
+  }
+  updateEstimate();
+}
+
+function updateSpent() {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const total = state.jobs
+    .filter((j) => j.status === "COMPLETED" && j.createdAt >= start.getTime() && typeof j.estimatedCost === "number")
+    .reduce((n, j) => n + j.estimatedCost, 0);
+  $("#spent").textContent = total ? `≈ ${FalPricing.money(total)} today` : "";
 }
 
 // ------------------------------------------------------------------ models
@@ -842,7 +936,7 @@ function renderModelList() {
         h(
           "button",
           { class: `model-item ${state.model && state.model.id === m.id ? "active" : ""}`, title: m.id, onclick: () => selectModel(m) },
-          h("span", { class: "model-name" }, m.name, m.custom ? h("span", { class: "tag" }, "custom") : null),
+          h("span", { class: "model-name" }, m.name, m.rank ? h("span", { class: "tag rank" }, m.rank) : null, m.custom ? h("span", { class: "tag" }, "custom") : null),
           h("span", { class: "model-desc" }, m.description)
         )
       )
@@ -871,6 +965,7 @@ async function selectModel(model, presetValues) {
   renderModelList();
   document.body.classList.remove("sidebar-open");
   renderModelHeader(null);
+  loadLivePrice(model);
   $("#schemaNotice").replaceChildren();
   $("#fields").replaceChildren(h("div", { class: "loading" }, h("span", { class: "spinner" }), " Loading model settings from fal…"));
   try {
@@ -961,7 +1056,7 @@ async function generate(e) {
   const btn = $("#generate");
   btn.disabled = true;
   try {
-    const res = await api("/api/generate", { method: "POST", body: JSON.stringify({ endpointId: state.model.id, inputs }) });
+    const res = await api("/api/generate", { method: "POST", body: JSON.stringify({ endpointId: state.model.id, inputs, estimatedCost: state.lastEstimate ? state.lastEstimate.perRequest : undefined }) });
     state.jobs = dedupe([...res.jobs, ...state.jobs]);
     res.jobs.forEach((j) => state.polling.add(j.id));
     if (res.errors.length) toast(`${res.errors.length} request(s) failed to submit: ${res.errors[0]}`, "error", 8000);
@@ -991,6 +1086,7 @@ async function pollLoop() {
         if (idx >= 0) state.jobs[idx] = job;
         if (!ACTIVE.has(job.status)) {
           state.polling.delete(id);
+          updateSpent();
           if (job.status === "FAILED") toast(`Generation failed: ${job.error || "unknown error"}`, "error", 8000);
         }
         updateJobCard(job);
@@ -1032,6 +1128,7 @@ function visibleJobs() {
 }
 
 function renderJobs() {
+  updateSpent();
   const container = $("#jobs");
   const jobs = visibleJobs();
   $$("#filter button").forEach((b) => b.classList.toggle("active", b.dataset.filter === state.filter));
@@ -1083,6 +1180,7 @@ function jobCard(job) {
       h("span", { class: `status ${job.status.toLowerCase()}` }, active ? h("span", { class: "spinner small" }) : null, STATUS_LABEL[job.status] || job.status, job.status === "IN_QUEUE" && job.queuePosition != null ? ` · #${job.queuePosition + 1}` : ""),
       h("span", { class: "job-model", title: job.endpointId }, model ? model.name : job.endpointId),
       job.batchIndex ? h("span", { class: "tag" }, `run ${job.batchIndex}`) : null,
+      typeof job.estimatedCost === "number" ? h("span", { class: "tag", title: "Estimated cost of this request" }, `≈ ${FalPricing.money(job.estimatedCost)}`) : null,
       h("span", { class: "topbar-spacer" }),
       h("span", { class: "muted small", title: new Date(job.createdAt).toLocaleString() }, `${fmtTime(job.createdAt)} · ${fmtDur(elapsed)}`)
     ),
@@ -1255,7 +1353,10 @@ function bind() {
   $("#modelSearch").addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("#modelList .model-item")?.click();
   });
-  $("#extraJson").addEventListener("input", debounce(saveDraft, 400));
+  $("#extraJson").addEventListener("input", debounce(() => {
+    saveDraft();
+    updateEstimate();
+  }, 400));
   $("#runs").addEventListener("input", updateRunsHint);
   $$(".stepper button").forEach((b) =>
     b.addEventListener("click", () => {

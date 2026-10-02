@@ -48,6 +48,8 @@
           <p class="hint" id="runsHint"></p>
         </div>
 
+        <div id="costBox" class="cost-box" aria-live="polite"></div>
+
         <div class="actions">
           <button type="submit" class="btn primary big" id="generate">Generate <kbd>Ctrl ↵</kbd></button>
           <button type="button" class="btn ghost" id="previewJson">Request JSON</button>
@@ -60,6 +62,7 @@
     <section class="results">
       <div class="results-head">
         <h2>Generations</h2>
+        <span class="muted small" id="spent" title="Sum of cost estimates for jobs finished today (not your actual fal bill)"></span>
         <div class="seg" id="filter">
           <button data-filter="all" class="active">All</button>
           <button data-filter="model">This model</button>
@@ -126,6 +129,7 @@
   </div>
 
   <div id="toasts" class="toasts"></div>
+  <script src="pricing.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

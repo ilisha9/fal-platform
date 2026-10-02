@@ -25,6 +25,8 @@ loadDotEnv(path.join(ROOT, ".env"));
 const QUEUE_BASE = process.env.FAL_QUEUE_URL || "https://queue.fal.run";
 const REST_BASE = process.env.FAL_REST_URL || "https://rest.fal.ai";
 const OPENAPI_URL = process.env.FAL_OPENAPI_URL || "https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=";
+const PLATFORM_API = process.env.FAL_PLATFORM_URL || "https://api.fal.ai/v1";
+const PRICE_TTL_MS = 6 * 60 * 60 * 1000;
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1 GB
 const MULTIPART_THRESHOLD = 90 * 1024 * 1024; // same threshold as the official client
 const MULTIPART_CHUNK = 10 * 1024 * 1024;
@@ -193,6 +195,7 @@ async function getSchema(endpointId) {
 }
 
 function guessCategory(id) {
+  if (/reference-to-video/.test(id)) return "reference-to-video";
   if (/image-to-video|i2v/.test(id)) return "image-to-video";
   if (/video/.test(id)) return "text-to-video";
   if (/edit|kontext|image-to-image/.test(id)) return "image-to-image";
@@ -200,7 +203,24 @@ function guessCategory(id) {
 }
 
 function allModels() {
-  return [...MODELS, ...(config.customModels || []).map((m) => ({ ...m, custom: true }))];
+  const known = new Set(CATEGORIES.map((c) => c.id));
+  return [
+    ...MODELS,
+    ...(config.customModels || []).map((m) => ({ ...m, category: known.has(m.category) ? m.category : "other", custom: true })),
+  ];
+}
+
+// Live unit prices from fal's Platform API, cached per endpoint.
+const priceCache = new Map();
+
+async function getLivePrice(endpointId) {
+  const hit = priceCache.get(endpointId);
+  if (hit && Date.now() - hit.at < PRICE_TTL_MS) return hit.value;
+  const data = await falFetch(`${PLATFORM_API}/models/pricing?endpoint_id=${encodeURIComponent(endpointId)}`);
+  const price = (data && Array.isArray(data.prices) ? data.prices : []).find((p) => p.endpoint_id === endpointId) || null;
+  const value = price && { unit_price: price.unit_price, unit: price.unit, currency: price.currency || "USD" };
+  priceCache.set(endpointId, { at: Date.now(), value });
+  return value;
 }
 
 // ---------------------------------------------------------------- uploads
@@ -383,7 +403,7 @@ setInterval(() => {
   }
 }, 5000).unref();
 
-async function submitJob({ endpointId, input, batchIndex, batchId }) {
+async function submitJob({ endpointId, input, batchIndex, batchId, estimatedCost }) {
   const sub = await falFetch(`${QUEUE_BASE}/${endpointId}`, { method: "POST", body: input });
   const app = queueAppPath(endpointId);
   const job = {
@@ -393,6 +413,7 @@ async function submitJob({ endpointId, input, batchIndex, batchId }) {
     input,
     batchId,
     batchIndex,
+    estimatedCost,
     status: "IN_QUEUE",
     queuePosition: sub.queue_position,
     statusUrl: sub.status_url || `${QUEUE_BASE}/${app}/requests/${sub.request_id}/status`,
@@ -564,6 +585,17 @@ const routes = {
     return getSchema(id);
   },
 
+  "GET /api/pricing": async (req, url) => {
+    const id = url.searchParams.get("id");
+    if (!validEndpointId(id)) throw new FalError("Invalid endpoint id", 400);
+    if (!apiKey()) return { live: null, error: "Add your API key to load live prices." };
+    try {
+      return { live: await getLivePrice(id) };
+    } catch (e) {
+      return { live: null, error: e.message };
+    }
+  },
+
   "POST /api/upload": async (req) => {
     const fileName = decodeURIComponent(req.headers["x-file-name"] || `upload-${Date.now()}`).replace(/[\\/]/g, "_");
     const contentType = req.headers["content-type"] || "application/octet-stream";
@@ -586,7 +618,8 @@ const routes = {
   },
 
   "POST /api/generate": async (req) => {
-    const { endpointId, inputs } = await readJsonBody(req);
+    const { endpointId, inputs, estimatedCost } = await readJsonBody(req);
+    const cost = Number.isFinite(estimatedCost) && estimatedCost >= 0 ? estimatedCost : undefined;
     if (!validEndpointId(endpointId)) throw new FalError("Invalid endpoint id", 400);
     if (!Array.isArray(inputs) || !inputs.length || inputs.length > 50) {
       throw new FalError("Provide between 1 and 50 inputs", 400);
@@ -597,7 +630,7 @@ const routes = {
     // Submit sequentially so a bad key/input fails fast instead of N times.
     for (const [i, input] of inputs.entries()) {
       try {
-        jobs.push(await submitJob({ endpointId, input, batchIndex: inputs.length > 1 ? i + 1 : undefined, batchId }));
+        jobs.push(await submitJob({ endpointId, input, batchIndex: inputs.length > 1 ? i + 1 : undefined, batchId, estimatedCost: cost }));
       } catch (e) {
         errors.push(e);
         if (e.status && e.status < 500) break;
