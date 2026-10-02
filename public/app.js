@@ -523,7 +523,7 @@ function previewFor(url, kind) {
 function buildMediaField(ctx) {
   const { schema, multiple } = ctx;
   const accept = acceptFor(ctx.name, schema);
-  const max = multiple ? schema.maxItems ?? 20 : 1;
+  const max = multiple ? schema.maxItems ?? 50 : 1;
   let urls = [];
   const thumbs = h("div", { class: "thumbs" });
   const fileInput = h("input", { type: "file", accept, multiple: multiple || undefined, class: "hidden" });
