@@ -155,6 +155,7 @@ test("every built-in video/image model has a price rule or is flagged for live p
   const missing = MODELS.filter((m) => !pricing.hasRule(m.id)).map((m) => m.id);
   assert.deepStrictEqual(missing, [
     "minimax/h3/text-to-video/lora",
+    "minimax/h3-max/multi-angle/image-to-video",
     "minimax/h3-max/lip-sync/image-to-video",
     "minimax/h3-max/3d-to-video",
     "xai/grok-imagine-image",
