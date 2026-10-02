@@ -202,6 +202,7 @@ function buildStringField(ctx) {
       update();
     },
     focus: () => input.focus(),
+    input,
   };
 }
 
@@ -525,6 +526,7 @@ function buildMediaField(ctx) {
   const accept = acceptFor(ctx.name, schema);
   const max = multiple ? schema.maxItems ?? 50 : 1;
   let urls = [];
+  let tagger = null; // (position) => "@Image1" etc., set when the model supports prompt tags
   const thumbs = h("div", { class: "thumbs" });
   const fileInput = h("input", { type: "file", accept, multiple: multiple || undefined, class: "hidden" });
   const urlInput = h("input", { class: "input", type: "url", placeholder: multiple ? "…or paste a URL and press Enter" : "…or paste a URL" });
@@ -544,7 +546,11 @@ function buildMediaField(ctx) {
           { class: `thumb ${u.uploading ? "uploading" : ""}`, title: u.name || u.url },
           u.url ? previewFor(u.url, u.kind) : h("div", { class: "file-chip" }, "⏳"),
           u.uploading ? h("div", { class: "progress" }, h("span", { style: `width:${Math.round((u.progress || 0) * 100)}%` })) : null,
-          multiple && urls.length > 1 ? h("span", { class: "thumb-index" }, i + 1) : null,
+          tagger
+            ? h("span", { class: "thumb-index tag-label", title: "Type @ in the prompt to insert this reference" }, tagger(i + 1))
+            : multiple && urls.length > 1
+            ? h("span", { class: "thumb-index" }, i + 1)
+            : null,
           h("button", { type: "button", class: "thumb-x", title: "Remove", onclick: (e) => { e.stopPropagation(); urls.splice(i, 1); render(); ctx.onChange && ctx.onChange(); } }, "✕")
         )
       )
@@ -659,6 +665,12 @@ function buildMediaField(ctx) {
     accept,
     multiple,
     isMedia: true,
+    // Uploaded files with their 1-based position (the number used in prompt tags).
+    items: () => urls.map((u, i) => ({ ...u, position: i + 1 })).filter((u) => u.url && !u.uploading),
+    setTagger: (fn) => {
+      tagger = fn;
+      render();
+    },
   };
   return ctl;
 }
@@ -740,6 +752,137 @@ function renderForm(schema) {
   };
   const prompt = entries.find(([k]) => k === "prompt");
   if (prompt && prompt[1].focus) setTimeout(() => prompt[1].focus(), 50);
+  if (prompt && prompt[1].input) setupMentions(prompt[1], entries, schema);
+}
+
+// ------------------------------------------------------------------ @-mentions for reference files
+
+const MODALITIES = ["Image", "Video", "Audio"];
+
+// How this model wants references named in the prompt, read from fal's field descriptions:
+// "@Image1" (Seedance) or "Image 1" (MiniMax H3, Wan). Null when the model has no tag syntax.
+function detectTagStyle(schema) {
+  const text = JSON.stringify(schema.properties || {});
+  if (/@(Image|Video|Audio)\s?1\b/.test(text)) return { name: "@Image1", format: (m, n) => `@${m}${n}` };
+  if (/\b(Image|Video|Audio) 1\b/.test(text)) return { name: "Image 1", format: (m, n) => `${m} ${n}` };
+  return null;
+}
+
+function modalityOf(ctl) {
+  if (ctl.accept.startsWith("video")) return "Video";
+  if (ctl.accept.startsWith("audio")) return "Audio";
+  return "Image";
+}
+
+function setupMentions(promptCtl, entries, schema) {
+  const style = detectTagStyle(schema);
+  if (!style) return;
+  // Reference lists only (multi-file fields); single start/end frame fields are not tagged.
+  const lists = {};
+  for (const [key, ctl] of entries) {
+    if (!ctl.isMedia || !ctl.multiple) continue;
+    const mod = modalityOf(ctl);
+    const desc = (schema.properties[key] && schema.properties[key].description) || "";
+    // Prefer the list whose description names the tag (e.g. "referenced as Image 1").
+    if (!lists[mod] || new RegExp(`${mod}\\s?1`).test(desc)) lists[mod] = { key, ctl };
+  }
+  if (!Object.keys(lists).length) return;
+  for (const mod of MODALITIES) if (lists[mod]) lists[mod].ctl.setTagger((n) => style.format(mod, n));
+
+  const input = promptCtl.input;
+  const field = input.closest(".field");
+  field.classList.add("has-mentions");
+  const hint = h("p", { class: "hint mention-hint" }, `Type `, h("kbd", {}, "@"), ` to insert an uploaded reference (this model uses `, h("code", {}, style.format("Image", 1)), `).`);
+  field.append(hint);
+
+  const menu = h("div", { class: "mention-menu hidden", role: "listbox" });
+  input.parentElement.append(menu);
+  let options = [];
+  let active = 0;
+  let start = -1; // index of the "@" being completed
+
+  const close = () => {
+    menu.classList.add("hidden");
+    start = -1;
+  };
+
+  const choose = (opt) => {
+    if (!opt || start < 0) return close();
+    const before = input.value.slice(0, start);
+    const after = input.value.slice(input.selectionStart);
+    const tag = opt.tag + (after.startsWith(" ") ? "" : " ");
+    input.value = before + tag + after;
+    const caret = before.length + tag.length;
+    input.setSelectionRange(caret, caret);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    close();
+    input.focus();
+  };
+
+  const draw = (query) => {
+    const all = [];
+    for (const mod of MODALITIES) {
+      if (!lists[mod]) continue;
+      for (const it of lists[mod].ctl.items()) {
+        all.push({ tag: style.format(mod, it.position), mod, it });
+      }
+    }
+    const q = query.toLowerCase().replace(/\s+/g, "");
+    options = all.filter((o) => !q || o.tag.toLowerCase().replace(/[@\s]/g, "").startsWith(q) || (o.it.name || "").toLowerCase().includes(q));
+    active = Math.min(active, Math.max(0, options.length - 1));
+    if (!all.length) {
+      menu.replaceChildren(h("div", { class: "mention-empty" }, `Upload reference files below first (${Object.keys(lists).join(", ").toLowerCase()}).`));
+    } else if (!options.length) {
+      menu.replaceChildren(h("div", { class: "mention-empty" }, "No matching reference."));
+    } else {
+      menu.replaceChildren(
+        ...options.map((o, i) =>
+          h(
+            "button",
+            {
+              type: "button",
+              class: `mention-item ${i === active ? "active" : ""}`,
+              role: "option",
+              onmousedown: (e) => {
+                e.preventDefault(); // keep focus in the textarea
+                choose(o);
+              },
+            },
+            h("span", { class: "mention-thumb" }, previewFor(o.it.url, o.it.kind)),
+            h("strong", {}, o.tag),
+            h("span", { class: "muted small mention-name" }, o.it.name || o.it.url.split("/").pop())
+          )
+        )
+      );
+    }
+    menu.classList.remove("hidden");
+  };
+
+  input.addEventListener("input", () => {
+    const caret = input.selectionStart;
+    const upto = input.value.slice(0, caret);
+    const m = /(^|\s)@([\w]*)$/.exec(upto);
+    if (!m) return close();
+    start = caret - m[2].length - 1;
+    draw(m[2]);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (menu.classList.contains("hidden")) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!options.length) return;
+      active = (active + (e.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+      draw(input.value.slice(start + 1, input.selectionStart));
+    } else if ((e.key === "Enter" || e.key === "Tab") && options.length) {
+      e.preventDefault();
+      e.stopPropagation();
+      choose(options[active]);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      close();
+    }
+  });
+  input.addEventListener("blur", () => setTimeout(close, 150));
 }
 
 function debounce(fn, ms) {

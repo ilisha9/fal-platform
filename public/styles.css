@@ -173,6 +173,18 @@ fieldset.object legend { padding: 0 6px; font-weight: 550; font-size: 13px; }
 .cost-detail { margin-top: 3px; overflow-wrap: anywhere; }
 .tag.rank { color: var(--accent-2); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 
+.with-counter { position: relative; }
+.mention-menu { position: absolute; left: 0; right: 0; top: 100%; margin-top: 4px; z-index: 30; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.35); max-height: 280px; overflow-y: auto; padding: 4px; }
+.mention-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+.mention-item.active, .mention-item:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.mention-thumb { width: 40px; height: 40px; flex: none; border-radius: 6px; overflow: hidden; background: var(--panel-2); display: grid; place-items: center; }
+.mention-thumb img, .mention-thumb video { width: 100%; height: 100%; object-fit: cover; }
+.mention-thumb .file-chip { font-size: 18px; }
+.mention-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.mention-empty { padding: 10px; color: var(--muted); font-size: 13px; }
+.thumb-index.tag-label { font-family: var(--mono); font-size: 10.5px; background: var(--accent); }
+.mention-hint kbd { border-color: var(--border); opacity: 1; }
+
 /* ---------- results ---------- */
 .results-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .results-head h2 { margin: 0; font-size: 18px; flex: 1; }
