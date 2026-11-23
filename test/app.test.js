@@ -126,7 +126,8 @@ test("pricing: per-second by resolution and audio", () => {
 test("pricing: Seedance token formula and video-reference discount", () => {
   // 1280x720 x 5s x 24 / 1024 = 108,000 tokens x $0.0214/1k
   near(pricing.estimate("bytedance/seedance-2.5/text-to-video", { duration: 5, resolution: "720p", aspect_ratio: "16:9" }).perRequest, 2.3112);
-  near(pricing.estimate("bytedance/seedance-2.5/reference-to-video", { duration: 5, resolution: "720p", reference_video_urls: ["x"] }).perRequest, 2.3112 * 0.6);
+  // fal: with any video reference the whole request bills at $0.0128/1k (480p/720p)
+  near(pricing.estimate("bytedance/seedance-2.5/reference-to-video", { duration: 5, resolution: "720p", video_urls: ["x"] }).perRequest, 108 * 0.0128);
   // Seedance 2.0 at 720p ≈ the published $0.30/s (21,600 tokens/s × $0.014/1k)
   assert.ok(Math.abs(pricing.estimate("bytedance/seedance-2.0/text-to-video", { duration: 1, resolution: "720p" }).perRequest - 0.3024) < 0.0001);
 });
@@ -163,6 +164,36 @@ test("pricing: Gemini Omni Flash 1.2 matches fal's examples", () => {
   const edit = pricing.estimate("google/gemini-omni-flash/v1.2/edit", { resolution: "4k" });
   near(edit.perRequest, 0.2457 * 5);
   assert.ok(edit.assumptions.some((a) => /assumed 5s/.test(a)));
+});
+
+test("pricing: models added in November match fal's examples", () => {
+  // Kling 4.0: 5s 4K = $2.745 SDR, $3.135 HDR
+  near(pricing.estimate("kling/v4/text-to-video", { duration: 5, resolution: "4k" }).perRequest, 2.745);
+  near(pricing.estimate("kling/v4/text-to-video", { duration: 5, resolution: "4k", hdr: true }).perRequest, 3.135);
+  // FLUX 3: "1440p" uses the 2K rate ($0.32/s)
+  near(pricing.estimate("blackforestlabs/flux-3/text-to-video", { duration: 10, resolution: "1440p" }).perRequest, 3.2);
+  // FLUX 3 Max: 10s 720p = $1.105 during the promo, $1.70 after Dec 7
+  const promo = Date.now() < Date.parse("2026-12-08T00:00:00Z");
+  near(pricing.estimate("blackforestlabs/flux-3-max/text-to-video", { duration: 10, resolution: "720p" }).perRequest, promo ? 1.105 : 1.7);
+  near(pricing.estimate("heygen/heygen-video/text-to-video", { duration: 10, resolution: "1080p" }).perRequest, 0.6);
+  // Seedance 2.5 Flash 720p ≈ $0.3024/s
+  near(pricing.estimate("bytedance/seedance-2.5/flash/text-to-video", { duration: 1, resolution: "720p" }).perRequest, 0.3024);
+  // H3 Max Recast: 10s single shot ≈ $2.25 at 768p, ≈ $3.10 at 1080p
+  assert.ok(Math.abs(pricing.estimate("minimax/h3-max/recast", { duration: 10, resolution: "768p" }).perRequest - 2.25) < 0.01);
+  assert.ok(Math.abs(pricing.estimate("minimax/h3-max/recast", { duration: 10, resolution: "1080p" }).perRequest - 3.1) < 0.01);
+  // Omni 1.2 upscale: 10s to 1080p ≈ $0.41, to 4K ≈ $1.64
+  near(pricing.estimate("google/gemini-omni-flash/v1.2/upscale", { duration: 10, resolution: "1080p" }).perRequest, 0.41);
+  near(pricing.estimate("google/gemini-omni-flash/v1.2/upscale", { duration: 10, resolution: "4k" }).perRequest, 1.638);
+  // Images
+  near(pricing.estimate("microsoft/mai-image-2.7/text-to-image", { resolution: "1K" }).perRequest, 0.034816);
+  near(pricing.estimate("microsoft/mai-image-2.7/edit", { resolution: "1K", image_urls: ["a"] }).perRequest, 0.043008);
+  near(pricing.estimate("kling/v4/image-to-image", { resolution: "2K", num_images: 4, image_urls: ["a"] }).perRequest, 0.255);
+  near(pricing.estimate("bytedance/seedream/v5.5/edit", { image_size: "auto_2K", image_urls: ["a", "b"] }).perRequest, 0.0645);
+  near(pricing.estimate("bytedance/seedream/v5.5/edit", { image_size: "square_hd", image_urls: ["a", "b"], num_images: 2 }).perRequest, 0.108);
+  near(pricing.estimate("google/nano-banana-2.1", { resolution: "4K" }).perRequest, 0.134);
+  near(pricing.estimate("google/nano-banana-2.1/edit", { resolution: "1K", image_urls: ["a", "b"] }).perRequest, 0.044);
+  near(pricing.estimate("xai/grok-imagine-image/v2.0/edit", { resolution: "2k", quality: "low", image_urls: ["a"] }).perRequest, 0.07);
+  near(pricing.estimate("krea/v3/edit", { image_size: "square_hd", image_urls: ["a"] }).perRequest, 0.05);
 });
 
 test("pricing: images", () => {

@@ -12,7 +12,7 @@
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.FalPricing = factory();
 })(typeof self !== "undefined" ? self : this, function () {
-  const PRICES_CHECKED = "fal.ai, checked Oct–Nov 2026";
+  const PRICES_CHECKED = "fal.ai, checked 23 Nov 2026";
 
   // ---------------------------------------------------------------- input readers
 
@@ -108,14 +108,24 @@
 
   // Per-second price chosen by resolution (and optionally audio on/off).
   // table: { "720p": 0.1 } or { "720p": [silent, withAudio] }
-  function perSecond(table, { defaultRes = "720p", audioDefault = true, multiplier, minSeconds, fee, assumedSeconds } = {}) {
+  // promo: { until: ISO date, table, label } uses `table` until that moment.
+  // aliases: map a model's resolution names to table keys (e.g. 1440p → 2k).
+  // addPerSecond: [{ param, table, label }] extra per-second charge when param is true.
+  function perSecond(table, { defaultRes = "720p", audioDefault = true, multiplier, minSeconds, fee, assumedSeconds, promo, aliases, addPerSecond } = {}) {
     return (r) => {
+      let promoNote = "";
+      let tbl = table;
+      if (promo && Date.now() < Date.parse(promo.until)) {
+        tbl = promo.table;
+        promoNote = promo.label;
+      }
       let res = r.res(defaultRes);
-      if (!(res in table)) {
+      if (aliases && aliases[res]) res = aliases[res];
+      if (!(res in tbl)) {
         r.assumptions.push(`no listed rate for ${res}, used ${defaultRes}`);
         res = defaultRes;
       }
-      let rate = table[res];
+      let rate = tbl[res];
       let audioNote = "";
       if (Array.isArray(rate)) {
         const on = r.audio(audioDefault);
@@ -126,6 +136,13 @@
       if (minSeconds && secs < minSeconds) secs = minSeconds;
       let cost = rate * secs;
       const lines = [`${secs}s × ${money(rate)}/s (${res}${audioNote})`];
+      if (promoNote) lines.push(promoNote);
+      for (const a of addPerSecond || []) {
+        if (r.v(a.param) === true && a.table[res]) {
+          cost += a.table[res] * secs;
+          lines.push(`+ ${secs}s × ${money(a.table[res])}/s ${a.label}`);
+        }
+      }
       if (fee) {
         cost += fee.amount;
         lines.push(`+ ${money(fee.amount)} ${fee.label}`);
@@ -145,16 +162,20 @@
   }
 
   // Token-billed video (Seedance): tokens = width × height × seconds × 24 / 1024.
-  function videoTokens(rates, { defaultRes = "720p", multiplier, inputVideo } = {}) {
+  // refRates: per-1k rates used instead when any video reference is attached.
+  function videoTokens(rates, { defaultRes = "720p", multiplier, inputVideo, refRates } = {}) {
     return (r) => {
       const res = r.res(defaultRes);
-      const per1k = typeof rates === "number" ? rates : rates[res] ?? rates.default;
+      const hasVideoRef = r.listLen("reference_video_urls", "video_urls") > 0;
+      const pick = (t) => (typeof t === "number" ? t : t[res] ?? t.default);
+      const per1k = refRates && hasVideoRef ? pick(refRates) : pick(rates);
+      if (refRates && hasVideoRef) r.assumptions.push("reduced rate for video references");
       if (inputVideo && r.listLen("reference_video_urls", "video_urls") > 0) r.assumptions.push("input reference video seconds are also billed (not included)");
       const [w, h] = videoDims(res, r.v("aspect_ratio"));
       const secs = r.seconds();
       const tokens = (w * h * secs * 24) / 1024;
       let cost = (tokens / 1000) * per1k;
-      const lines = [`${secs}s at ${w}×${h} ≈ ${Math.round(tokens).toLocaleString()} tokens × $${per1k}/1k tokens`];
+      const lines = [`${secs}s at ${w}×${h} ≈ ${Math.round(tokens).toLocaleString()} tokens × $${+per1k.toFixed(6)}/1k tokens`];
       if (multiplier) {
         const m = multiplier(r);
         if (m && m.factor !== 1) {
@@ -165,9 +186,6 @@
       return { cost, lines };
     };
   }
-
-  const videoRefDiscount = (r) =>
-    r.listLen("reference_video_urls", "video_urls", "reference_videos") > 0 ? { factor: 0.6, note: "× 0.6 (video references discount)" } : null;
 
   function perImage(base, { resMultipliers, extras } = {}) {
     return (r) => {
@@ -240,6 +258,132 @@
     };
   }
 
+  // Per-image price looked up from a setting (e.g. resolution), plus per-input fees.
+  function imageBy(param, table, { fallback, perInput, inputKeys = ["image_urls"], extras, normalize = (x) => x } = {}) {
+    return (r) => {
+      let key = normalize(String(r.v(param) ?? fallback));
+      if (!(key in table)) {
+        r.assumptions.push(`no listed price for ${param} "${key}", used ${fallback}`);
+        key = fallback;
+      }
+      const n = r.count();
+      const unit = table[key];
+      let cost = unit * n;
+      const lines = [`${n} image${n > 1 ? "s" : ""} × ${money(unit)} (${key})`];
+      const inputs = r.listLen(...inputKeys);
+      if (perInput && inputs) {
+        const add = perInput.perOutput ? perInput.price * inputs * n : perInput.price * inputs;
+        cost += add;
+        lines.push(`+ ${inputs} input image${inputs > 1 ? "s" : ""} × ${money(perInput.price)}${perInput.perOutput && n > 1 ? ` × ${n} outputs` : ""}`);
+      }
+      for (const e of extras || []) {
+        if (e.equals !== undefined ? r.v(e.param) === e.equals : r.v(e.param) === true) {
+          cost += e.price * n;
+          lines.push(`+ ${money(e.price)} ${e.label}`);
+        }
+      }
+      return { cost, lines };
+    };
+  }
+
+  // MAI-Image-2.7: billed by image tokens (1 token per 1,024 pixels).
+  function maiImage(outPerM, inPerM) {
+    return (r) => {
+      const res = String(r.v("resolution") ?? "1K").toUpperCase();
+      const outTokens = res === "2K" ? 4096 : 1024;
+      const n = r.count();
+      let cost = (outTokens / 1e6) * outPerM * n;
+      const lines = [`${n} × ${outTokens.toLocaleString()} image tokens × $${outPerM}/M (${res})`];
+      const inputs = r.listLen("image_urls");
+      if (inPerM && inputs) {
+        cost += (inputs * 1024 / 1e6) * inPerM;
+        lines.push(`+ ${inputs} input image${inputs > 1 ? "s" : ""} × ~1,024 tokens × $${inPerM}/M`);
+      }
+      r.assumptions.push("prompt tokens not included");
+      return { cost, lines };
+    };
+  }
+
+  // Krea 3 Edit: $0.025 per megapixel of output plus each reference (capped at output size).
+  function kreaMegapixel(perMp) {
+    return (r) => {
+      const [w, h] = imageDims(r);
+      const outMp = (w * h) / 1048576;
+      const refs = r.listLen("image_urls");
+      if (refs) r.assumptions.push("each reference counted at the output size");
+      const mp = outMp * (1 + refs);
+      return { cost: mp * perMp, lines: [`${mp.toFixed(2)} MP (output${refs ? ` + ${refs} reference${refs > 1 ? "s" : ""}` : ""}) × ${money(perMp)}/MP`] };
+    };
+  }
+
+  // Grok Imagine Image 2.0: by quality (low/medium) and resolution (1K/2K).
+  function grokImage(perInput) {
+    const T = { "1k": { low: 0.04, medium: 0.06 }, "2k": { low: 0.06, medium: 0.08 } };
+    return (r) => {
+      let res = String(r.v("resolution") ?? "1k").toLowerCase();
+      let q = String(r.v("quality") ?? "medium").toLowerCase();
+      if (res === "1.5k") {
+        r.assumptions.push("1.5K priced as 2K");
+        res = "2k";
+      }
+      if (!T[res]) res = "1k";
+      if (!T[res][q]) {
+        r.assumptions.push(`quality "${q}" priced as medium`);
+        q = "medium";
+      }
+      const n = r.count();
+      const unit = T[res][q];
+      let cost = unit * n;
+      const lines = [`${n} × ${money(unit)} (${q}, ${res.toUpperCase()})`];
+      const inputs = r.listLen("image_urls");
+      if (perInput && inputs) {
+        cost += perInput * inputs;
+        lines.push(`+ ${inputs} input image${inputs > 1 ? "s" : ""} × ${money(perInput)}`);
+      }
+      return { cost, lines };
+    };
+  }
+
+  // Kling 4.0 reference: with video references the cheaper rate applies to
+  // input + output seconds, billed as at least twice the output duration.
+  function klingRef(table, refTable, hdr) {
+    const base = perSecond(table, { defaultRes: "1080p", addPerSecond: [hdr] });
+    return (r) => {
+      if (r.listLen("video_urls") === 0) return base(r);
+      const res = r.res("1080p");
+      const rate = refTable[res] ?? refTable["1080p"];
+      const secs = r.seconds();
+      const billable = secs * 2;
+      r.assumptions.push("billed as input + output seconds, at least 2× output (input length not known)");
+      return { cost: rate * billable, lines: [`${billable} billable s × ${money(rate)}/s (${res}, video reference rate)`] };
+    };
+  }
+
+  // Omni 1.2 Upscale: price depends on source → target resolution.
+  function omniUpscale(r) {
+    const target = r.res("1080p");
+    const rate = target === "4k" ? 0.1638 : 0.041;
+    r.assumptions.push(target === "4k" ? "any source → 4K" : "assumes source one step lower (360p→1080p costs $0.0819/s)");
+    r.assumptions.push("billed by your source video's length");
+    const secs = r.seconds(5);
+    return { cost: rate * secs, lines: [`${secs}s × ${money(rate)}/s (to ${target})`] };
+  }
+
+  // H3 Max Recast: per output second (5s minimum) + input video tokens over 4,096
+  // at $0.022/1k; one second of input ≈ 6,750 tokens. Output length = source length.
+  function recast(r) {
+    const res = r.res("768p");
+    const rate = { "768p": 0.085, "1080p": 0.17 }[res] ?? 0.085;
+    const secs = Math.max(5, r.seconds(5));
+    const extraTokens = Math.max(0, secs * 6750 - 4096);
+    const tokenCost = (extraTokens / 1000) * 0.022;
+    r.assumptions.push("billed by your source video's length");
+    return {
+      cost: rate * secs + tokenCost,
+      lines: [`${secs}s × ${money(rate)}/s (${res})`, `+ ~${Math.round(extraTokens).toLocaleString()} input video tokens × $0.022/1k`],
+    };
+  }
+
   // ---------------------------------------------------------------- curated rules
 
   const VEO31 = { "720p": [0.2, 0.4], "1080p": [0.2, 0.4], "4k": [0.4, 0.6] };
@@ -259,7 +403,6 @@
   const H3MAX_TURBO = { "480p": 0.025, "768p": 0.04, "1080p": 0.08 };
   const H3MAX_TURBO_2K = { ...H3MAX_TURBO, "2k": 0.16 };
   const H3MAX_INSERT = { "480p": 0.05, "768p": 0.06 };
-  const H3MAX_RECAST = { "768p": 0.3, "1080p": 0.45 };
   const H3 = { "480p": 0.05, "768p": 0.06, "2k": 0.13, "4k": 0.16 };
   const H3_LORA = { "480p": 0.0625, "768p": 0.075, "2k": 0.1625, "4k": 0.2 };
   // H3 Max reference: 4,096 reference tokens included; a square image is 1,024 tokens;
@@ -282,7 +425,20 @@
   const WEB_SEARCH = [{ param: "enable_web_search", price: 0.015, label: "web search" }];
   const NB2_EXTRAS = [...WEB_SEARCH, { param: "thinking_level", equals: "high", price: 0.002, label: "high thinking" }];
   const SEEDANCE2 = { "480p": 0.014, "720p": 0.014, "1080p": 0.014, "4k": 0.008, default: 0.014 };
-  const SEEDANCE25 = { "480p": 0.0214, "720p": 0.0214, "1080p": 0.0234, default: 0.0214 };
+  const SEEDANCE2_VIDEO_REF = { "480p": 0.0086016, "720p": 0.0086016, "1080p": 0.0086016, "4k": 0.0048, default: 0.0086016 };
+  const SEEDANCE25 = { "480p": 0.0214, "720p": 0.0214, "1080p": 0.0234, "4k": 0.0094, default: 0.0214 };
+  const SEEDANCE25_VIDEO_REF = { "480p": 0.0128, "720p": 0.0128, "1080p": 0.014, "4k": 0.0058, default: 0.0128 };
+  const SEEDANCE25_FLASH = 0.014;
+  const SEEDANCE25_FLASH_VIDEO_REF = 0.014 * 0.614;
+  // FLUX 3 Max: 35% off through Dec 7, 2026 (UTC); regular rates from Dec 8.
+  const FLUX3MAX = { "720p": 0.17, "1080p": 0.29, "2k": 0.4, "4k": 0.8 };
+  const FLUX3MAX_PROMO = { until: "2026-12-08T00:00:00Z", label: "35% off promo (until Dec 7)", table: { "720p": 0.1105, "1080p": 0.1885, "2k": 0.26, "4k": 0.52 } };
+  const FLUX3 = { "720p": 0.17, "1080p": 0.29, "2k": 0.32, "4k": 0.47 };
+  const FLUX3_ALIASES = { "1440p": "2k", "2160p": "4k" };
+  const HEYGEN = { "480p": 0.02, "768p": 0.02, "1080p": 0.06, "2k": 0.06 };
+  const KLING4 = { "720p": 0.157, "1080p": 0.235, "4k": 0.549 };
+  const KLING4_VIDEO_REF = { "720p": 0.094, "1080p": 0.141, "4k": 0.329 };
+  const KLING4_HDR = { param: "hdr", table: { "1080p": 0.047, "4k": 0.078 }, label: "HDR" };
 
   const RULES = {
     // Video
@@ -291,6 +447,27 @@
     "google/gemini-omni-flash/v1.2/reference-to-video": withNote(perSecond(OMNI12), "reference & text tokens not included"),
     // Edit bills the edited output, which is as long as the source video (no duration setting).
     "google/gemini-omni-flash/v1.2/edit": withNote(perSecond(OMNI12), `billed by your source video's length; ${OMNI12_TOKENS}`),
+    "google/gemini-omni-flash/v1.2/extend": withNote(perSecond(OMNI12), OMNI12_TOKENS),
+    "google/gemini-omni-flash/v1.2/upscale": omniUpscale,
+    "blackforestlabs/flux-3-max/text-to-video": perSecond(FLUX3MAX, { promo: FLUX3MAX_PROMO }),
+    "blackforestlabs/flux-3-max/image-to-video": perSecond(FLUX3MAX, { promo: FLUX3MAX_PROMO }),
+    "blackforestlabs/flux-3/text-to-video": perSecond(FLUX3, { aliases: FLUX3_ALIASES }),
+    "blackforestlabs/flux-3/image-to-video": perSecond(FLUX3, { aliases: FLUX3_ALIASES }),
+    "heygen/heygen-video/text-to-video": perSecond(HEYGEN, { defaultRes: "768p" }),
+    "heygen/heygen-video/image-to-video": perSecond(HEYGEN, { defaultRes: "768p" }),
+    "heygen/heygen-video/reference-to-video": perSecond(HEYGEN, { defaultRes: "768p" }),
+    "kling/v4/text-to-video": perSecond(KLING4, { defaultRes: "1080p", addPerSecond: [KLING4_HDR] }),
+    "kling/v4/image-to-video": perSecond(KLING4, { defaultRes: "1080p", addPerSecond: [KLING4_HDR] }),
+    "kling/v4/reference-to-video": klingRef(KLING4, KLING4_VIDEO_REF, KLING4_HDR),
+    "minimax/h3-max-turbo/reference-to-video": perSecond(H3MAX, { defaultRes: "768p", multiplier: (r) => {
+      const m = h3MaxRefTokens(r);
+      return m && { add: m.add * 0.8, note: m.note.replace("$0.02/1k", "$0.016/1k") };
+    } }),
+    "minimax/h3-max/reframe-video": withNote(perSecond(H3MAX, { defaultRes: "768p" }), "billed by your source video's length (long videos bill overlap seconds too)"),
+    "minimax/h3-max/relight": withNote(perSecond(H3MAX_2K, { defaultRes: "768p" }), "billed by your source video's length"),
+    "bytedance/seedance-2.5/flash/text-to-video": videoTokens(SEEDANCE25_FLASH),
+    "bytedance/seedance-2.5/flash/image-to-video": videoTokens(SEEDANCE25_FLASH),
+    "bytedance/seedance-2.5/flash/reference-to-video": videoTokens(SEEDANCE25_FLASH, { refRates: SEEDANCE25_FLASH_VIDEO_REF, inputVideo: true }),
     "google/gemini-omni-flash/v1.1/text-to-video": perSecond(OMNI),
     "google/gemini-omni-flash/v1.1/image-to-video": perSecond(OMNI),
     "google/gemini-omni-flash/v1.1/reference-to-video": perSecond(OMNI),
@@ -306,7 +483,7 @@
     "minimax/h3-max/extend-video": perSecond(H3MAX_2K, { defaultRes: "768p", multiplier: h3MaxRefTokens }),
     "minimax/h3-max/camera-controls": perSecond(H3MAX, { defaultRes: "768p" }),
     "minimax/h3-max/insert-video": perSecond(H3MAX_INSERT, { defaultRes: "768p", multiplier: h3MaxRefTokens }),
-    "minimax/h3-max/recast": perSecond(H3MAX_RECAST, { defaultRes: "768p" }),
+    "minimax/h3-max/recast": recast,
     "minimax/h3-max/lip-sync/image-to-video": perSecond(H3MAX_2K, { defaultRes: "768p", multiplier: lipSyncLong }),
     "minimax/h3-max/3d-to-video": perSecond(H3MAX, { defaultRes: "768p", minSeconds: 5, fee: { amount: 0.5, label: "processing fee" }, multiplier: h3MaxRefTokens }),
     "minimax/h3-max-turbo/text-to-video": perSecond(H3MAX_TURBO, { defaultRes: "768p" }),
@@ -320,10 +497,10 @@
     "minimax/h3/reference-to-video/lora": perSecond(H3_LORA, { defaultRes: "2k" }),
     "bytedance/seedance-2.5/text-to-video": videoTokens(SEEDANCE25),
     "bytedance/seedance-2.5/image-to-video": videoTokens(SEEDANCE25),
-    "bytedance/seedance-2.5/reference-to-video": videoTokens(SEEDANCE25, { multiplier: videoRefDiscount, inputVideo: true }),
+    "bytedance/seedance-2.5/reference-to-video": videoTokens(SEEDANCE25, { refRates: SEEDANCE25_VIDEO_REF, inputVideo: true }),
     "bytedance/seedance-2.0/text-to-video": videoTokens(SEEDANCE2),
     "bytedance/seedance-2.0/image-to-video": videoTokens(SEEDANCE2),
-    "bytedance/seedance-2.0/reference-to-video": videoTokens(SEEDANCE2, { multiplier: videoRefDiscount, inputVideo: true }),
+    "bytedance/seedance-2.0/reference-to-video": videoTokens(SEEDANCE2, { refRates: SEEDANCE2_VIDEO_REF, inputVideo: true }),
     "fal-ai/veo3.1": perSecond(VEO31),
     "fal-ai/veo3.1/image-to-video": perSecond(VEO31),
     "fal-ai/veo3.1/fast": perSecond(VEO31_FAST),
@@ -336,6 +513,24 @@
     "openai/gpt-image-2.5/flare/text-to-image": gptImage(),
     "openai/gpt-image-2.5/sunburst/edit": gptImage(),
     "openai/gpt-image-2.5/flare/edit": gptImage(),
+    // GPT Image 2.6 bills at the same token rates as 2.5; fal publishes no 2.6 size table.
+    "openai/gpt-image-2.6/sunburst/text-to-image": withNote(gptImage(), "approx.: GPT Image 2.5's table (same token rates)"),
+    "openai/gpt-image-2.6/flare/text-to-image": withNote(gptImage(), "approx.: GPT Image 2.5's table (same token rates)"),
+    "openai/gpt-image-2.6/sunburst/edit": withNote(gptImage(), "approx.: GPT Image 2.5's table (same token rates)"),
+    "openai/gpt-image-2.6/flare/edit": withNote(gptImage(), "approx.: GPT Image 2.5's table (same token rates)"),
+    "microsoft/mai-image-2.7/text-to-image": maiImage(34),
+    "microsoft/mai-image-2.7/flash/text-to-image": maiImage(10),
+    "microsoft/mai-image-2.7/edit": maiImage(34, 8),
+    "microsoft/mai-image-2.7/flash/edit": maiImage(10, 2.5),
+    "kling/v4/text-to-image": imageBy("resolution", { "2K": 0.063, "4K": 0.094, "8K": 0.157 }, { fallback: "2K" }),
+    "kling/v4/image-to-image": imageBy("resolution", { "2K": 0.063, "4K": 0.094, "8K": 0.157 }, { fallback: "2K", perInput: { price: 0.003 }, inputKeys: ["image_urls", "elements"] }),
+    "google/nano-banana-2.1": withNote(imageBy("resolution", { "1K": 0.04, "2K": 0.059, "4K": 0.134 }, { fallback: "1K", extras: WEB_SEARCH }), "thinking tokens can add a little"),
+    "google/nano-banana-2.1/edit": withNote(imageBy("resolution", { "1K": 0.04, "2K": 0.059, "4K": 0.134 }, { fallback: "1K", perInput: { price: 0.002 }, extras: WEB_SEARCH }), "thinking tokens can add a little"),
+    "xai/grok-imagine-image/v2.0/text-to-image": grokImage(0),
+    "xai/grok-imagine-image/v2.0/edit": grokImage(0.01),
+    "bytedance/seedream/v5.5/text-to-image": imageBy("image_size", { "auto_2K": 0.0405, standard: 0.03 }, { fallback: "standard", normalize: (x) => (x === "auto_2K" ? x : "standard") }),
+    "bytedance/seedream/v5.5/edit": imageBy("image_size", { "auto_2K": 0.0405, standard: 0.03 }, { fallback: "standard", normalize: (x) => (x === "auto_2K" ? x : "standard"), perInput: { price: 0.012, perOutput: true } }),
+    "krea/v3/edit": kreaMegapixel(0.025),
     "fal-ai/nano-banana-pro": perImage(0.15, { resMultipliers: { "1K": 1, "2K": 1, "4K": 2 }, extras: WEB_SEARCH }),
     "fal-ai/nano-banana-pro/edit": perImage(0.15, { resMultipliers: { "1K": 1, "2K": 1, "4K": 2 }, extras: WEB_SEARCH }),
     "fal-ai/nano-banana-2": perImage(0.08, { resMultipliers: NB2_RES, extras: NB2_EXTRAS }),
