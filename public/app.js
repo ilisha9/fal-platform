@@ -267,7 +267,9 @@ function buildNumberField(ctx) {
   const parts = [];
   let range = null;
   if (min !== undefined && max !== undefined && max - min <= 1000 && name !== "seed") {
-    range = h("input", { type: "range", min, max, step, class: "range" });
+    // Snap the slider from 0 rather than from an odd minimum (e.g. 0.92 would give 8.02).
+    const rangeStep = Math.abs(min / step - Math.round(min / step)) > 1e-9 ? "any" : step;
+    range = h("input", { type: "range", min, max, step: rangeStep, class: "range" });
     range.value = num.value !== "" ? num.value : schema.default ?? min;
     range.addEventListener("input", () => {
       num.value = range.value;
@@ -775,7 +777,8 @@ function modalityOf(ctl) {
 }
 
 function setupMentions(promptCtl, entries, schema) {
-  const style = detectTagStyle(schema);
+  const guide = window.FalGuides && state.model ? FalGuides.guideFor(state.model.id) : null;
+  const style = detectTagStyle(schema) || (guide && guide.tagStyle) || null;
   if (!style) return;
   // Reference lists only (multi-file fields); single start/end frame fields are not tagged.
   const lists = {};
@@ -1216,6 +1219,7 @@ async function selectModel(model, presetValues) {
   renderModelHeader(null);
   loadLivePrice(model);
   $("#schemaNotice").replaceChildren();
+  $("#guidePanel").replaceChildren();
   $("#fields").replaceChildren(h("div", { class: "loading" }, h("span", { class: "spinner" }), " Loading model settings from fal…"));
   try {
     const schema = await api(`/api/schema?id=${encodeURIComponent(model.id)}`);
@@ -1224,6 +1228,7 @@ async function selectModel(model, presetValues) {
     renderModelHeader(schema);
     if (schema.warning) $("#schemaNotice").replaceChildren(h("div", { class: `notice ${schema.source === "fallback" ? "warn" : ""}` }, schema.warning));
     renderForm(schema.input);
+    renderGuide(model, schema);
     const draft = presetValues ? { values: presetValues } : store.get(draftKey(), null);
     if (draft && draft.values) state.root.set(draft.values);
     $("#extraJson").value = presetValues ? "" : (draft && draft.extra) || "";
@@ -1267,6 +1272,103 @@ function renderModelHeader(schema) {
     ),
     m.description || info.description ? h("p", { class: "muted" }, m.description || info.description) : null
   );
+}
+
+// ------------------------------------------------------------------ prompt guides
+
+function categoryOf(model) {
+  if (model.category && model.category !== "other") return model.category;
+  const id = model.id;
+  if (/reference-to-video/.test(id)) return "reference-to-video";
+  if (/image-to-video/.test(id)) return "image-to-video";
+  if (/video/.test(id)) return /extend|edit|upscale|recast|relight|reframe/.test(id) ? "video-to-video" : "text-to-video";
+  if (/edit|image-to-image/.test(id)) return "image-to-image";
+  return "text-to-image";
+}
+
+// Set a form field to a suggested value, matching the field's own enum type.
+function applySetting(key, value) {
+  const entry = state.root && state.root.entries.find(([k]) => k === key);
+  if (!entry) return false;
+  const prop = unwrapNullable((state.schema.input.properties || {})[key] || {}).schema;
+  const options = Array.isArray(prop.enum) ? prop.enum : (prop.variants || []).flatMap((v) => v.enum || []);
+  let v = value;
+  if (options.length) {
+    v = options.find((o) => String(o) === String(value)) ?? options.find((o) => parseFloat(o) === Number(value));
+    if (v === undefined) return false;
+  } else if (prop.type === "integer" || prop.type === "number") {
+    if ((prop.maximum !== undefined && value > prop.maximum) || (prop.minimum !== undefined && value < prop.minimum)) return false;
+  }
+  entry[1].set(v);
+  return true;
+}
+
+function insertExample(example) {
+  const promptEntry = state.root && state.root.entries.find(([k]) => k === "prompt");
+  if (!promptEntry) return;
+  const current = promptEntry[1].get();
+  if (current && current.trim() && !confirm("Replace your current prompt with the example?")) return;
+  promptEntry[1].set(example.prompt);
+  const applied = Object.entries(example.settings || {}).filter(([k, v]) => applySetting(k, v)).map(([k, v]) => `${k} ${v}`);
+  saveDraft();
+  updateRunsHint();
+  toast(`Example inserted${applied.length ? ` (set ${applied.join(", ")})` : ""}. Add your own reference files where it mentions them.`, "success", 4000);
+  promptEntry[1].focus && promptEntry[1].focus();
+}
+
+function renderGuide(model, schema) {
+  const panel = $("#guidePanel");
+  panel.replaceChildren();
+  if (!window.FalGuides) return;
+  const guide = FalGuides.guideFor(model.id);
+  if (!guide) return;
+  const example = FalGuides.exampleFor(model.id, categoryOf(model));
+  const hasPrompt = Boolean((schema.input.properties || {}).prompt);
+  const copy = (text, what) => {
+    navigator.clipboard.writeText(text).then(() => toast(`${what} copied`, "info", 1500)).catch(() => {});
+  };
+  const det = h(
+    "details",
+    { class: "guide", open: store.get("guideOpen", false) || undefined },
+    h(
+      "summary",
+      {},
+      h("span", {}, "📘 Prompt guide · ", h("strong", {}, guide.title)),
+      example && hasPrompt
+        ? h("button", { type: "button", class: "btn small primary guide-insert", onclick: (e) => { e.preventDefault(); insertExample(example); } }, "Insert example")
+        : null
+    ),
+    h("ul", { class: "guide-tips" }, guide.tips.map((t) => h("li", {}, t))),
+    guide.template
+      ? h(
+          "div",
+          { class: "guide-block" },
+          h("div", { class: "guide-block-head" }, h("strong", {}, "Template"), h("button", { type: "button", class: "btn ghost small", onclick: () => copy(guide.template, "Template") }, "Copy")),
+          h("pre", { class: "code" }, guide.template)
+        )
+      : null,
+    example && hasPrompt
+      ? h(
+          "div",
+          { class: "guide-block" },
+          h(
+            "div",
+            { class: "guide-block-head" },
+            h("strong", {}, "Example for this model"),
+            example.settings ? h("span", { class: "muted small" }, Object.entries(example.settings).map(([k, v]) => `${k}: ${v}`).join(" · ")) : null,
+            h("span", { class: "topbar-spacer" }),
+            h("button", { type: "button", class: "btn ghost small", onclick: () => copy(example.prompt, "Example") }, "Copy"),
+            h("button", { type: "button", class: "btn small", onclick: () => insertExample(example) }, "Insert")
+          ),
+          h("pre", { class: "code" }, example.prompt)
+        )
+      : !hasPrompt
+      ? h("p", { class: "muted small" }, "This endpoint has no prompt field; its settings and input files drive the result.")
+      : null,
+    h("p", { class: "guide-sources muted small" }, "Sources: ", guide.sources.map((s, i) => [i ? " · " : "", h("a", { href: s.url, target: "_blank", rel: "noopener" }, s.label)]))
+  );
+  det.addEventListener("toggle", () => store.set("guideOpen", det.open));
+  panel.append(det);
 }
 
 async function reloadSchema() {

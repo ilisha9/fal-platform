@@ -233,3 +233,19 @@ test("models API includes metadata for filters", async () => {
   assert.strictEqual(wan.priceFrom, 0.05);
   assert.strictEqual(wan.audio, true);
 });
+
+test("prompt guides: every model has a guide; examples use the model's tag style and limits", () => {
+  const guides = require("../public/guides");
+  const meta = require("../lib/model-meta.json");
+  for (const m of MODELS) {
+    const g = guides.guideFor(m.id);
+    assert.ok(g, `${m.id} has no guide`);
+    const ex = guides.exampleFor(m.id, m.category);
+    if (!ex) continue;
+    if (/^bytedance\/seedance|^kling\/v4\/reference/.test(m.id)) assert.ok(!/\b(Image|Video) \d/.test(ex.prompt), `${m.id} should use @Image1 tags`);
+    if (/^(minimax\/h3|alibaba\/wan).*reference/.test(m.id)) assert.ok(!/@Image/.test(ex.prompt), `${m.id} should use "Image 1" tags`);
+    if (/^heygen\/.*reference/.test(m.id)) assert.ok(/<Picture 1>/.test(ex.prompt));
+    const d = ex.settings && ex.settings.duration;
+    if (d && meta[m.id].maxDuration) assert.ok(d <= meta[m.id].maxDuration, `${m.id} example duration ${d} > ${meta[m.id].maxDuration}`);
+  }
+});
