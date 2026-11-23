@@ -1061,14 +1061,108 @@ async function loadModels() {
   renderModelList();
 }
 
+// ------------------------------------------------------------------ sort & filter
+
+const DEFAULT_FILTERS = { sort: "rank", quality: "any", price: "any", features: [] };
+// "Price (from)" thresholds: [per second of video, per image].
+const PRICE_LIMITS = { 1: [0.05, 0.02], 2: [0.1, 0.04], 3: [0.2, 0.06] };
+const RES_RANK = { "720p": 1, "768p": 1, "1080p": 2, "2K": 3, "4K": 4, "8K": 5 };
+
+function getFilters() {
+  return { ...DEFAULT_FILTERS, ...store.get("modelFilters", {}) };
+}
+
+function rankNumber(m) {
+  const r = /#(\d+)/.exec(m.rank || "");
+  return r ? Number(r[1]) : null;
+}
+
+function modelPrice(m) {
+  return typeof m.priceFrom === "number" ? m.priceFrom : typeof m.price === "number" ? m.price : null;
+}
+
+function fmtUnitPrice(m) {
+  const p = modelPrice(m);
+  if (p == null) return null;
+  const n = p >= 0.1 ? p.toFixed(2) : p >= 0.01 ? p.toFixed(3).replace(/0$/, "") : p.toFixed(4);
+  return `from $${n}${m.priceUnit === "s" ? "/s" : "/img"}`;
+}
+
+function passesFilters(m, f) {
+  if (f.quality !== "any") {
+    const n = rankNumber(m);
+    if (n == null) return false;
+    if (f.quality !== "ranked" && n > Number(f.quality)) return false;
+  }
+  if (f.price !== "any") {
+    const p = modelPrice(m);
+    const [perSec, perImg] = PRICE_LIMITS[f.price];
+    if (p == null || p > (m.priceUnit === "s" ? perSec : perImg)) return false;
+  }
+  for (const feat of f.features) {
+    if (feat === "audio" && !m.audio) return false;
+    if (feat === "endFrame" && !m.endFrame) return false;
+    if (feat === "lora" && !m.lora) return false;
+    if (feat === "4k" && !((RES_RANK[m.maxRes] || 0) >= 4)) return false;
+  }
+  return true;
+}
+
+function sortModels(models, sort) {
+  const list = models.map((m, i) => ({ m, i }));
+  const byPrice = (dir) => (a, b) => {
+    const pa = modelPrice(a.m);
+    const pb = modelPrice(b.m);
+    if (pa == null && pb == null) return a.i - b.i;
+    if (pa == null) return 1;
+    if (pb == null) return -1;
+    return (pa - pb) * dir || a.i - b.i;
+  };
+  if (sort === "price-asc") list.sort(byPrice(1));
+  else if (sort === "price-desc") list.sort(byPrice(-1));
+  else if (sort === "newest") list.sort((a, b) => String(b.m.released || "").localeCompare(String(a.m.released || "")) || a.i - b.i);
+  else if (sort === "name") list.sort((a, b) => a.m.name.localeCompare(b.m.name));
+  // "rank": the catalog is already ordered by leaderboard position within each group.
+  return list.map((x) => x.m);
+}
+
+function syncFilterControls() {
+  const f = getFilters();
+  $("#modelSort").value = f.sort;
+  $("#filterQuality").value = f.quality;
+  $("#filterPrice").value = f.price;
+  $$("#filterChips .chip").forEach((c) => c.classList.toggle("on", f.features.includes(c.dataset.feature)));
+}
+
+function setFilters(patch) {
+  store.set("modelFilters", { ...getFilters(), ...patch });
+  syncFilterControls();
+  renderModelList();
+}
+
+function modelTags(m) {
+  const tags = [];
+  const price = fmtUnitPrice(m);
+  if (price) tags.push(h("span", { class: "mtag price", title: "Cheapest resolution, from fal's price list" }, price));
+  if (m.maxRes) tags.push(h("span", { class: "mtag", title: "Highest output resolution" }, m.maxRes));
+  if (m.maxDuration) tags.push(h("span", { class: "mtag", title: "Longest clip" }, `≤${m.maxDuration}s`));
+  if (m.audio) tags.push(h("span", { class: "mtag", title: "Generates audio" }, "♪"));
+  if (m.endFrame) tags.push(h("span", { class: "mtag", title: "Accepts an end frame" }, "end frame"));
+  if (m.lora) tags.push(h("span", { class: "mtag", title: "Accepts LoRA weights" }, "LoRA"));
+  return tags.length ? h("span", { class: "model-tags" }, tags) : null;
+}
+
 function renderModelList() {
   const q = $("#modelSearch").value.trim().toLowerCase();
   const list = $("#modelList");
   list.replaceChildren();
-  const match = (m) => !q || `${m.name} ${m.id} ${m.description}`.toLowerCase().includes(q);
+  const f = getFilters();
+  const match = (m) => (!q || `${m.name} ${m.id} ${m.description}`.toLowerCase().includes(q)) && (m.custom || passesFilters(m, f));
   const collapsed = store.get("collapsedCats", []);
+  let shown = 0;
   for (const cat of state.categories) {
-    const models = state.models.filter((m) => m.category === cat.id && match(m));
+    const models = sortModels(state.models.filter((m) => m.category === cat.id && match(m)), f.sort);
+    shown += models.length;
     if (!models.length) continue;
     const open = q || !collapsed.includes(cat.id);
     const det = h(
@@ -1080,7 +1174,8 @@ function renderModelList() {
           "button",
           { class: `model-item ${state.model && state.model.id === m.id ? "active" : ""}`, title: m.id, onclick: () => selectModel(m) },
           h("span", { class: "model-name" }, m.name, m.rank ? h("span", { class: "tag rank" }, m.rank) : null, m.custom ? h("span", { class: "tag" }, "custom") : null),
-          h("span", { class: "model-desc" }, m.description)
+          h("span", { class: "model-desc" }, m.description),
+          modelTags(m)
         )
       )
     );
@@ -1099,7 +1194,18 @@ function renderModelList() {
         h("span", { class: "model-desc mono" }, $("#modelSearch").value.trim()))
     );
   }
-  if (!list.children.length) list.append(h("p", { class: "muted pad" }, "No matches. Paste a full endpoint id to use any fal model."));
+  const filtered = f.quality !== "any" || f.price !== "any" || f.features.length > 0;
+  const status = $("#filterStatus");
+  status.replaceChildren();
+  if (filtered) {
+    status.append(
+      `Showing ${shown} of ${state.models.length} models · `,
+      h("button", { type: "button", class: "link-btn", onclick: () => setFilters({ quality: "any", price: "any", features: [] }) }, "Clear filters")
+    );
+  }
+  if (!list.children.length) {
+    list.append(h("p", { class: "muted pad" }, filtered ? "No model matches these filters." : "No matches. Paste a full endpoint id to use any fal model."));
+  }
 }
 
 async function selectModel(model, presetValues) {
@@ -1493,6 +1599,17 @@ function bind() {
     }
   });
   $("#modelSearch").addEventListener("input", renderModelList);
+  syncFilterControls();
+  $("#modelSort").addEventListener("change", (e) => setFilters({ sort: e.target.value }));
+  $("#filterQuality").addEventListener("change", (e) => setFilters({ quality: e.target.value }));
+  $("#filterPrice").addEventListener("change", (e) => setFilters({ price: e.target.value }));
+  $$("#filterChips .chip").forEach((chip) =>
+    chip.addEventListener("click", () => {
+      const features = new Set(getFilters().features);
+      features.has(chip.dataset.feature) ? features.delete(chip.dataset.feature) : features.add(chip.dataset.feature);
+      setFilters({ features: [...features] });
+    })
+  );
   $("#modelSearch").addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("#modelList .model-item")?.click();
   });

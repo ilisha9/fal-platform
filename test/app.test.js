@@ -218,3 +218,18 @@ test("live pricing route proxies fal's pricing API", async () => {
   const r = await call("/api/pricing?id=fal-ai/test/model");
   assert.deepStrictEqual(r.body.live, { unit_price: 0.025, unit: "image", currency: "USD" });
 });
+
+test("every built-in model has sidebar metadata (npm run update-meta)", () => {
+  const meta = require("../lib/model-meta.json");
+  const missing = MODELS.filter((m) => !meta[m.id]).map((m) => m.id);
+  assert.deepStrictEqual(missing, []);
+  for (const m of MODELS) assert.ok(typeof meta[m.id].priceFrom === "number", `${m.id} has no price`);
+});
+
+test("models API includes metadata for filters", async () => {
+  const r = await call("/api/models");
+  const wan = r.body.models.find((m) => m.id === "alibaba/wan-3.0/text-to-video");
+  assert.strictEqual(wan.priceUnit, "s");
+  assert.strictEqual(wan.priceFrom, 0.05);
+  assert.strictEqual(wan.audio, true);
+});

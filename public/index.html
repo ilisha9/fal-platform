@@ -20,6 +20,47 @@
   <div class="layout">
     <aside class="sidebar" id="sidebar">
       <input type="search" id="modelSearch" class="input" placeholder="Search models or paste an endpoint id…" autocomplete="off" />
+      <div class="model-tools">
+        <div class="tool-row">
+          <label class="tool">
+            <span>Sort</span>
+            <select id="modelSort" class="input small-input">
+              <option value="rank">Best ranked</option>
+              <option value="price-asc">Cheapest</option>
+              <option value="price-desc">Priciest</option>
+              <option value="newest">Newest</option>
+              <option value="name">Name</option>
+            </select>
+          </label>
+          <label class="tool">
+            <span>Quality</span>
+            <select id="filterQuality" class="input small-input">
+              <option value="any">Any</option>
+              <option value="5">Top 5</option>
+              <option value="10">Top 10</option>
+              <option value="ranked">Ranked only</option>
+            </select>
+          </label>
+        </div>
+        <div class="tool-row">
+          <label class="tool">
+            <span>Price (from)</span>
+            <select id="filterPrice" class="input small-input">
+              <option value="any">Any</option>
+              <option value="1">Budget · ≤ $0.05/s · ≤ $0.02/img</option>
+              <option value="2">≤ $0.10/s · ≤ $0.04/img</option>
+              <option value="3">≤ $0.20/s · ≤ $0.06/img</option>
+            </select>
+          </label>
+        </div>
+        <div class="chips" id="filterChips">
+          <button type="button" class="chip" data-feature="audio" title="Generates audio with the video">♪ Audio</button>
+          <button type="button" class="chip" data-feature="4k" title="Offers 4K (or higher) output">4K+</button>
+          <button type="button" class="chip" data-feature="endFrame" title="Accepts an end frame image">End frame</button>
+          <button type="button" class="chip" data-feature="lora" title="Accepts your own LoRA weights">LoRA</button>
+        </div>
+        <div class="filter-status muted small" id="filterStatus"></div>
+      </div>
       <nav id="modelList" class="model-list"></nav>
       <button class="btn block" id="addModel">＋ Add any fal model</button>
     </aside>

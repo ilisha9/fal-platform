@@ -9,6 +9,13 @@ const fsp = fs.promises;
 const path = require("path");
 const crypto = require("crypto");
 const { MODELS, CATEGORIES, fallbackSchemaFor } = require("./lib/models");
+// Per-model facts for the sidebar's sort/filter controls (npm run update-meta).
+let MODEL_META = {};
+try {
+  MODEL_META = require("./lib/model-meta.json");
+} catch {
+  /* optional */
+}
 const { extractEndpointSchemas } = require("./lib/openapi");
 
 const ROOT = __dirname;
@@ -206,7 +213,7 @@ function guessCategory(id) {
 function allModels() {
   const known = new Set(CATEGORIES.map((c) => c.id));
   return [
-    ...MODELS,
+    ...MODELS.map((m) => ({ ...m, ...(MODEL_META[m.id] || {}) })),
     ...(config.customModels || []).map((m) => ({ ...m, category: known.has(m.category) ? m.category : "other", custom: true })),
   ];
 }
