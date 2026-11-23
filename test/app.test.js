@@ -155,6 +155,16 @@ test("pricing: matches fal's worked examples", () => {
   near(pricing.estimate("minimax/h3-max/3d-to-video", { duration: 5, resolution: "768P" }).perRequest, 0.9);
 });
 
+test("pricing: Gemini Omni Flash 1.2 matches fal's examples", () => {
+  // fal: a 10-second 720p clip costs about $0.82, the same at 1080p about $1.23
+  near(pricing.estimate("google/gemini-omni-flash/v1.2/text-to-video", { duration: 10, resolution: "720p" }).perRequest, 0.819);
+  near(pricing.estimate("google/gemini-omni-flash/v1.2/reference-to-video", { duration: 10, resolution: "1080p" }).perRequest, 1.229);
+  near(pricing.estimate("google/gemini-omni-flash/v1.2/image-to-video", { duration: 8 }, { defaults: { resolution: "720p" } }).perRequest, 0.6552);
+  const edit = pricing.estimate("google/gemini-omni-flash/v1.2/edit", { resolution: "4k" });
+  near(edit.perRequest, 0.2457 * 5);
+  assert.ok(edit.assumptions.some((a) => /assumed 5s/.test(a)));
+});
+
 test("pricing: images", () => {
   near(pricing.estimate("fal-ai/nano-banana-2", { num_images: 2, resolution: "4K" }).perRequest, 0.32);
   near(pricing.estimate("fal-ai/nano-banana-pro", { resolution: "1K", enable_web_search: true }).perRequest, 0.165);

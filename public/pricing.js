@@ -12,7 +12,7 @@
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.FalPricing = factory();
 })(typeof self !== "undefined" ? self : this, function () {
-  const PRICES_CHECKED = "fal.ai, 2 Oct 2026";
+  const PRICES_CHECKED = "fal.ai, checked Oct–Nov 2026";
 
   // ---------------------------------------------------------------- input readers
 
@@ -244,6 +244,13 @@
 
   const VEO31 = { "720p": [0.2, 0.4], "1080p": [0.2, 0.4], "4k": [0.4, 0.6] };
   const VEO31_FAST = { "720p": [0.1, 0.15], "1080p": [0.1, 0.15], "4k": [0.3, 0.35] };
+  // Omni Flash 1.2: per second by resolution, plus input tokens at $1.50 per million.
+  const OMNI12 = { "360p": 0.0273, "720p": 0.0819, "1080p": 0.1229, "4k": 0.2457 };
+  const withNote = (rule, note) => (r) => {
+    r.assumptions.push(note);
+    return rule(r);
+  };
+  const OMNI12_TOKENS = "input tokens ($1.50/M) not included";
   const OMNI = { "360p": 0.03, "720p": 0.1, "1080p": 0.15, "4k": 0.3 };
   const WAN3 = { "480p": 0.05, "720p": 0.1, "1080p": 0.2 };
   const WAN3_PRIME = { "480p": 0.068, "720p": 0.14, "1080p": 0.28 };
@@ -279,6 +286,11 @@
 
   const RULES = {
     // Video
+    "google/gemini-omni-flash/v1.2/text-to-video": withNote(perSecond(OMNI12), OMNI12_TOKENS),
+    "google/gemini-omni-flash/v1.2/image-to-video": withNote(perSecond(OMNI12), OMNI12_TOKENS),
+    "google/gemini-omni-flash/v1.2/reference-to-video": withNote(perSecond(OMNI12), "reference & text tokens not included"),
+    // Edit bills the edited output, which is as long as the source video (no duration setting).
+    "google/gemini-omni-flash/v1.2/edit": withNote(perSecond(OMNI12), `billed by your source video's length; ${OMNI12_TOKENS}`),
     "google/gemini-omni-flash/v1.1/text-to-video": perSecond(OMNI),
     "google/gemini-omni-flash/v1.1/image-to-video": perSecond(OMNI),
     "google/gemini-omni-flash/v1.1/reference-to-video": perSecond(OMNI),
